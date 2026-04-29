@@ -79,7 +79,7 @@ export default function GroupListScreen({ navigation }) {
   if (loading) return <LoadingScreen message="Loading groups..." />;
 
   return (
-    <LinearGradient colors={COLORS.gradients.dark} style={styles.root}>
+    <LinearGradient colors={['#321555', '#271040']} style={styles.root}>
       {/* Header */}
       <View style={styles.header}>
         <View>

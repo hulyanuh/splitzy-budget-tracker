@@ -414,6 +414,3 @@ Also make sure `node_modules/` is in your `.gitignore` so Git doesn't track it a
 - [Lucide React Native](https://lucide.dev) — Icons
 - [expo-linear-gradient](https://docs.expo.dev/versions/latest/sdk/linear-gradient/) — Gradients
 
----
-
-*Splitzy v1.0 — Built for CS Mobile Development Course*

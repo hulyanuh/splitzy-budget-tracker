@@ -1,263 +1,147 @@
 import React, { useState, useEffect } from 'react';
-import {
-  View, Text, StyleSheet, ScrollView, KeyboardAvoidingView,
-  Platform, TouchableOpacity, Alert, TextInput,
-} from 'react-native';
+import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Alert, KeyboardAvoidingView, Platform } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
+import { ArrowLeft, UserPlus, X, Users, Save } from 'lucide-react-native';
 import { useAuth } from '../../context/AuthContext';
 import { supabase, TABLES } from '../../config/supabase';
 import { COLORS, FONTS, SPACING, RADIUS, SHADOWS } from '../../config/theme';
-import { GradientButton, OutlineButton, StyledInput, Avatar, GlassCard } from '../../components/UIComponents';
-
-const EMOJIS = ['👥', '✈️', '🏖️', '🍕', '🏠', '🎉', '💼', '🎮', '🏋️', '🎓', '🌍', '🚗'];
+import { StyledInput, GradientButton, Avatar, GlassCard } from '../../components/UIComponents';
 
 export default function CreateEditGroupScreen({ route, navigation }) {
-  const { group, groupId, members: existingMembers } = route.params || {};
-  const isEditing = !!groupId;
-  const { user, profile } = useAuth();
+  const { group } = route.params || {};
+  const isEdit = !!group;
+  const { user } = useAuth();
 
   const [name,        setName]        = useState(group?.name        || '');
   const [description, setDescription] = useState(group?.description || '');
-  const [emoji,       setEmoji]       = useState(group?.emoji       || '👥');
   const [memberEmail, setMemberEmail] = useState('');
   const [members,     setMembers]     = useState([]);
   const [loading,     setLoading]     = useState(false);
   const [errors,      setErrors]      = useState({});
 
-  // Pre-populate current user + existing members
   useEffect(() => {
-    const currentUser = { user_id: user.id, full_name: profile?.full_name || 'You', email: profile?.email || '', isCurrentUser: true };
-    if (isEditing && existingMembers) {
-      setMembers(existingMembers.map(m => ({
-        user_id:  m.user_id,
-        full_name: m.user?.full_name || '',
-        email:    m.user?.email      || '',
-        isCurrentUser: m.user_id === user.id,
-      })));
-    } else {
-      setMembers([currentUser]);
-    }
+    if (isEdit) loadCurrentMembers();
   }, []);
 
-  async function addMember() {
-    if (!memberEmail.trim()) return;
-    if (!memberEmail.includes('@')) {
-      Alert.alert('Invalid Email', 'Please enter a valid email address.');
+  async function loadCurrentMembers() {
+    const { data } = await supabase
+      .from(TABLES.GROUP_MEMBERS)
+      .select('*, user:users(id, full_name, email)')
+      .eq('group_id', group.id);
+    setMembers((data || []).map(m => ({ id: m.user?.id, full_name: m.user?.full_name, email: m.user?.email })));
+  }
+
+  async function handleAddMember() {
+    const email = memberEmail.trim().toLowerCase();
+    if (!email) return;
+    if (members.find(m => m.email === email)) {
+      Alert.alert('Already added', 'This person is already in the group.');
       return;
     }
-    if (members.find(m => m.email === memberEmail.trim())) {
-      Alert.alert('Already Added', 'This member is already in the group.');
-      return;
-    }
-
-    try {
-      const { data, error } = await supabase
-        .from(TABLES.USERS)
-        .select('id, full_name, email')
-        .eq('email', memberEmail.trim())
-        .single();
-
-      if (error || !data) {
-        Alert.alert('User Not Found', 'No Splitzy account found for this email. They need to sign up first.');
-        return;
-      }
-
-      setMembers(prev => [...prev, {
-        user_id:  data.id,
-        full_name: data.full_name,
-        email:    data.email,
-      }]);
-      setMemberEmail('');
-    } catch (err) {
-      Alert.alert('Error', err.message);
-    }
+    const { data, error } = await supabase.from(TABLES.USERS).select('id, full_name, email').eq('email', email).maybeSingle();
+    if (error) { Alert.alert('Error', error.message); return; }
+    if (!data || !data.id) { Alert.alert('Not found', 'No Splitzy account found for that email.'); return; }
+    if (user && data.id === user.id) { Alert.alert('That\'s you!', 'You\'re added automatically.'); return; }
+    setMembers(prev => [...prev, data]);
+    setMemberEmail('');
   }
 
-  function removeMember(userId) {
-    if (userId === user.id) return; // Can't remove yourself
-    setMembers(prev => prev.filter(m => m.user_id !== userId));
-  }
-
-  function validate() {
-    const e = {};
-    if (!name.trim())      e.name    = 'Group name is required';
-    if (members.length < 2) e.members = 'Add at least one other member';
-    setErrors(e);
-    return Object.keys(e).length === 0;
-  }
-
-  async function saveGroup() {
-    if (!validate()) return;
+  async function handleSubmit() {
+    if (!user) { Alert.alert('Session expired', 'Please sign out and sign in again.'); return; }
+    if (!name.trim()) { setErrors({ name: 'Group name is required' }); return; }
     setLoading(true);
     try {
-      let targetGroupId = groupId;
-
-      if (!isEditing) {
-        // Create group
-        const { data: newGroup, error: gErr } = await supabase
-          .from(TABLES.GROUPS)
-          .insert({ name: name.trim(), description: description.trim(), emoji, created_by: user.id })
-          .select()
-          .single();
-        if (gErr) throw gErr;
-        targetGroupId = newGroup.id;
-
-        // Add members
-        const memberRows = members.map(m => ({
-          group_id: targetGroupId,
-          user_id:  m.user_id,
-          role:     m.user_id === user.id ? 'admin' : 'member',
-        }));
-        const { error: mErr } = await supabase.from(TABLES.GROUP_MEMBERS).insert(memberRows);
-        if (mErr) throw mErr;
-
-        Alert.alert('🎉 Group Created!', `"${name}" is ready. Start adding expenses!`, [
-          { text: 'Open Group', onPress: () => navigation.replace('GroupDetail', { groupId: targetGroupId, groupName: name.trim() }) },
-        ]);
+      if (isEdit) {
+        await supabase.from(TABLES.GROUPS).update({ name: name.trim(), description: description.trim() }).eq('id', group.id);
+        const existing = await supabase.from(TABLES.GROUP_MEMBERS).select('user_id').eq('group_id', group.id);
+        const existingIds = (existing.data || []).map(m => m.user_id);
+        const newMembers = members.filter(m => !existingIds.includes(m.id));
+        if (newMembers.length) {
+          await supabase.from(TABLES.GROUP_MEMBERS).insert(newMembers.map(m => ({ group_id: group.id, user_id: m.id, role: 'member' })));
+        }
       } else {
-        // Update group info
-        const { error: uErr } = await supabase
-          .from(TABLES.GROUPS)
-          .update({ name: name.trim(), description: description.trim(), emoji })
-          .eq('id', groupId);
-        if (uErr) throw uErr;
-
-        // Sync members: add new, remove deleted
-        const { data: currMems } = await supabase
-          .from(TABLES.GROUP_MEMBERS)
-          .select('user_id')
-          .eq('group_id', groupId);
-
-        const currIds = (currMems || []).map(m => m.user_id);
-        const newIds  = members.map(m => m.user_id);
-
-        const toAdd    = members.filter(m => !currIds.includes(m.user_id));
-        const toRemove = currIds.filter(id => !newIds.includes(id) && id !== user.id);
-
-        if (toAdd.length) {
-          await supabase.from(TABLES.GROUP_MEMBERS).insert(toAdd.map(m => ({
-            group_id: groupId,
-            user_id:  m.user_id,
-            role:     'member',
-          })));
-        }
-        if (toRemove.length) {
-          await supabase.from(TABLES.GROUP_MEMBERS).delete()
-            .eq('group_id', groupId)
-            .in('user_id', toRemove);
-        }
-
-        Alert.alert('✅ Group Updated', 'Changes saved successfully.');
-        navigation.goBack();
+        const { data: newGroup } = await supabase.from(TABLES.GROUPS)
+          .insert({ name: name.trim(), description: description.trim(), created_by: user.id }).select().single();
+        const allMembers = [{ group_id: newGroup.id, user_id: user.id, role: 'admin' },
+          ...members.map(m => ({ group_id: newGroup.id, user_id: m.id, role: 'member' }))];
+        await supabase.from(TABLES.GROUP_MEMBERS).insert(allMembers);
       }
-    } catch (err) {
-      Alert.alert('Error', err.message);
-    } finally {
-      setLoading(false);
-    }
+      navigation.goBack();
+    } catch (e) { Alert.alert('Error', e.message); }
+    finally { setLoading(false); }
   }
 
   return (
-    <LinearGradient colors={COLORS.gradients.dark} style={{ flex: 1 }}>
-      <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={{ flex: 1 }}>
-        <ScrollView contentContainerStyle={styles.scroll} keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
+    <LinearGradient colors={['#1e0a30', '#130520']} style={styles.root}>
+      <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={{ flex: 1 }}>
+        {/* Header */}
+        <LinearGradient colors={['rgba(45,16,64,0.95)', 'transparent']} style={styles.header}>
+          <TouchableOpacity onPress={() => navigation.goBack()} style={styles.backBtn}>
+            <ArrowLeft size={22} color={COLORS.white} strokeWidth={2} />
+          </TouchableOpacity>
+          <Text style={styles.headerTitle}>{isEdit ? 'Edit Group' : 'New Group'}</Text>
+          <View style={{ width: 40 }} />
+        </LinearGradient>
 
-          {/* Header */}
-          <View style={styles.header}>
-            <TouchableOpacity onPress={() => navigation.goBack()}>
-              <Text style={styles.backText}>← Back</Text>
-            </TouchableOpacity>
-            <Text style={styles.title}>{isEditing ? 'Edit Group' : 'New Group'}</Text>
-          </View>
-
-          {/* Emoji Picker */}
-          <GlassCard style={styles.emojiCard}>
-            <Text style={styles.sectionLabel}>Pick an Emoji</Text>
-            <ScrollView horizontal showsHorizontalScrollIndicator={false}>
-              {EMOJIS.map(e => (
-                <TouchableOpacity
-                  key={e}
-                  onPress={() => setEmoji(e)}
-                  style={[styles.emojiBubble, emoji === e && styles.emojiBubbleSelected]}
-                >
-                  <Text style={styles.emojiText}>{e}</Text>
-                </TouchableOpacity>
-              ))}
-            </ScrollView>
+        <ScrollView contentContainerStyle={styles.scroll} showsVerticalScrollIndicator={false}>
+          {/* Group Info */}
+          <GlassCard style={styles.card}>
+            <View style={styles.groupIconPreview}>
+              <LinearGradient colors={['#9b59d0', '#ffadd0']} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={styles.groupIconBg}>
+                <Users size={32} color="#fff" strokeWidth={1.8} />
+              </LinearGradient>
+            </View>
+            <StyledInput label="Group Name" value={name} onChangeText={setName} placeholder="e.g. Barkada Trip" error={errors.name} />
+            <StyledInput label="Description (optional)" value={description} onChangeText={setDescription} placeholder="What's this group for?" multiline numberOfLines={3} />
           </GlassCard>
 
-          {/* Group Details */}
-          <GlassCard style={styles.formCard}>
-            <StyledInput
-              label="Group Name *"
-              placeholder="Trip to Palawan, Dinner Club..."
-              value={name}
-              onChangeText={setName}
-              error={errors.name}
-            />
-            <StyledInput
-              label="Description (optional)"
-              placeholder="What's this group for?"
-              value={description}
-              onChangeText={setDescription}
-              multiline
-              numberOfLines={3}
-              inputStyle={{ textAlignVertical: 'top', height: 80 }}
-            />
-          </GlassCard>
-
-          {/* Members */}
-          <GlassCard style={styles.formCard}>
-            <Text style={styles.sectionLabel}>Members ({members.length})</Text>
-            {errors.members && <Text style={styles.errorText}>{errors.members}</Text>}
-
-            {/* Member list */}
-            {members.map(m => (
-              <View key={m.user_id} style={styles.memberRow}>
-                <Avatar name={m.full_name} size={40} />
-                <View style={styles.memberInfo}>
-                  <Text style={styles.memberName}>{m.full_name} {m.isCurrentUser ? '(You)' : ''}</Text>
-                  <Text style={styles.memberEmail}>{m.email}</Text>
-                </View>
-                {!m.isCurrentUser && (
-                  <TouchableOpacity onPress={() => removeMember(m.user_id)} style={styles.removeBtn}>
-                    <Text style={styles.removeText}>✕</Text>
-                  </TouchableOpacity>
-                )}
-              </View>
-            ))}
-
-            {/* Add member */}
+          {/* Add Members */}
+          <GlassCard style={styles.card}>
+            <Text style={styles.cardLabel}>ADD MEMBERS</Text>
             <View style={styles.addMemberRow}>
-              <TextInput
-                style={styles.emailInput}
-                placeholder="Add by email..."
-                placeholderTextColor={COLORS.text.placeholder}
+              <StyledInput
                 value={memberEmail}
                 onChangeText={setMemberEmail}
+                placeholder="member@email.com"
                 keyboardType="email-address"
                 autoCapitalize="none"
-                selectionColor={COLORS.purple[400]}
-                returnKeyType="done"
-                onSubmitEditing={addMember}
+                containerStyle={{ flex: 1, marginBottom: 0 }}
+                onSubmitEditing={handleAddMember}
               />
-              <TouchableOpacity style={styles.addBtn} onPress={addMember}>
-                <LinearGradient colors={COLORS.gradients.primary} style={styles.addBtnGrad}>
-                  <Text style={styles.addBtnText}>Add</Text>
+              <TouchableOpacity onPress={handleAddMember} style={[styles.addBtn, SHADOWS.sm]}>
+                <LinearGradient colors={['#9b59d0', '#ffadd0']} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={styles.addBtnGrad}>
+                  <UserPlus size={18} color="#fff" strokeWidth={2} />
                 </LinearGradient>
               </TouchableOpacity>
             </View>
+
+            {members.length > 0 && (
+              <View style={styles.membersList}>
+                {members.map((m, i) => (
+                  <View key={i} style={styles.memberRow}>
+                    <Avatar name={m.full_name || m.email} size={36} />
+                    <View style={styles.memberInfo}>
+                      <Text style={styles.memberName}>{m.full_name || 'User'}</Text>
+                      <Text style={styles.memberEmail}>{m.email}</Text>
+                    </View>
+                    <TouchableOpacity onPress={() => setMembers(prev => prev.filter((_, idx) => idx !== i))}>
+                      <X size={18} color={COLORS.status.error} strokeWidth={2} />
+                    </TouchableOpacity>
+                  </View>
+                ))}
+              </View>
+            )}
           </GlassCard>
 
-          {/* Save */}
           <GradientButton
-            title={isEditing ? 'Save Changes' : 'Create Group'}
-            onPress={saveGroup}
+            title={isEdit ? 'Save Changes' : 'Create Group'}
+            onPress={handleSubmit}
             loading={loading}
-            icon={isEditing ? '✅' : '🚀'}
+            icon={<Save size={18} color="#fff" strokeWidth={2} />}
+            style={{ marginHorizontal: SPACING[5] }}
           />
 
-          <View style={{ height: SPACING[8] }} />
+          <View style={{ height: SPACING[10] }} />
         </ScrollView>
       </KeyboardAvoidingView>
     </LinearGradient>
@@ -265,45 +149,21 @@ export default function CreateEditGroupScreen({ route, navigation }) {
 }
 
 const styles = StyleSheet.create({
-  scroll:    { padding: SPACING[5], paddingTop: SPACING[12] },
-  header:    { marginBottom: SPACING[6] },
-  backText:  { color: COLORS.purple[300], fontSize: FONTS.sizes.base, fontWeight: '600', marginBottom: SPACING[4] },
-  title:     { color: COLORS.white, fontSize: FONTS.sizes['2xl'], fontWeight: '900' },
-  sectionLabel: {
-    color: COLORS.text.secondary, fontSize: FONTS.sizes.sm, fontWeight: '700',
-    textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: SPACING[3],
-  },
-  emojiCard: { marginBottom: SPACING[4] },
-  formCard:  { marginBottom: SPACING[4] },
-  emojiBubble: {
-    width: 52, height: 52, borderRadius: 26,
-    alignItems: 'center', justifyContent: 'center',
-    backgroundColor: COLORS.background.elevated,
-    marginRight: SPACING[2], borderWidth: 2, borderColor: 'transparent',
-  },
-  emojiBubbleSelected: { borderColor: COLORS.purple[400], backgroundColor: COLORS.purple[900] },
-  emojiText: { fontSize: 26 },
-  memberRow: { flexDirection: 'row', alignItems: 'center', marginBottom: SPACING[3] },
-  memberInfo:{ flex: 1, marginLeft: SPACING[3] },
-  memberName:{ color: COLORS.text.primary, fontSize: FONTS.sizes.base, fontWeight: '600' },
-  memberEmail: { color: COLORS.text.muted, fontSize: FONTS.sizes.xs },
-  removeBtn: {
-    width: 28, height: 28, borderRadius: 14,
-    backgroundColor: COLORS.status.errorBg,
-    alignItems: 'center', justifyContent: 'center',
-  },
-  removeText: { color: COLORS.status.error, fontSize: 14, fontWeight: '700' },
-  addMemberRow: { flexDirection: 'row', gap: SPACING[2], marginTop: SPACING[3] },
-  emailInput: {
-    flex: 1,
-    backgroundColor: COLORS.background.input,
-    borderWidth: 1.5, borderColor: COLORS.border,
-    borderRadius: RADIUS.md,
-    paddingHorizontal: SPACING[4], paddingVertical: SPACING[3],
-    color: COLORS.text.primary, fontSize: FONTS.sizes.base,
-  },
-  addBtn:    { borderRadius: RADIUS.md, overflow: 'hidden' },
-  addBtnGrad:{ paddingHorizontal: SPACING[4], paddingVertical: SPACING[3] + 2, alignItems: 'center' },
-  addBtnText:{ color: '#fff', fontWeight: '700', fontSize: FONTS.sizes.base },
-  errorText: { color: COLORS.status.error, fontSize: FONTS.sizes.sm, marginBottom: SPACING[3] },
+  root:           { flex: 1 },
+  header:         { flexDirection: 'row', alignItems: 'center', padding: SPACING[5], paddingTop: SPACING[12] },
+  backBtn:        { width: 40, height: 40, alignItems: 'center', justifyContent: 'center' },
+  headerTitle:    { flex: 1, color: COLORS.white, fontSize: FONTS.sizes.lg, fontWeight: '800', textAlign: 'center' },
+  scroll:         { padding: SPACING[5], gap: SPACING[4] },
+  card:           { gap: SPACING[3] },
+  groupIconPreview:{ alignItems: 'center', marginBottom: SPACING[2] },
+  groupIconBg:    { width: 72, height: 72, borderRadius: 36, alignItems: 'center', justifyContent: 'center' },
+  cardLabel:      { color: COLORS.blush, fontSize: FONTS.sizes.xs, fontWeight: '700', letterSpacing: 1.5, textTransform: 'uppercase' },
+  addMemberRow:   { flexDirection: 'row', alignItems: 'center', gap: SPACING[3] },
+  addBtn:         { borderRadius: RADIUS.lg, overflow: 'hidden' },
+  addBtnGrad:     { width: 48, height: 48, alignItems: 'center', justifyContent: 'center' },
+  membersList:    { gap: SPACING[3], marginTop: SPACING[3] },
+  memberRow:      { flexDirection: 'row', alignItems: 'center', gap: SPACING[3] },
+  memberInfo:     { flex: 1 },
+  memberName:     { color: COLORS.white,    fontSize: FONTS.sizes.base, fontWeight: '600' },
+  memberEmail:    { color: COLORS.lavender, fontSize: FONTS.sizes.xs },
 });

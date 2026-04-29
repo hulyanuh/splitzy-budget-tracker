@@ -1,208 +1,110 @@
 import React, { useState, useEffect } from 'react';
 import { View, Text, StyleSheet, ScrollView, TouchableOpacity } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
+import { ArrowLeft, Scale, ArrowRight, BarChart3 } from 'lucide-react-native';
 import { useAuth } from '../../context/AuthContext';
 import { supabase, TABLES, CATEGORIES } from '../../config/supabase';
-import { COLORS, FONTS, SPACING, RADIUS } from '../../config/theme';
-import {
-  calculateGroupBalances,
-  calculateMemberSummary,
-  simplifyDebts,
-  formatCurrency,
-} from '../../utils/splitCalculator';
-import { GlassCard, LoadingScreen, SectionHeader, Avatar } from '../../components/UIComponents';
-import { BalanceCard } from '../../components/Cards';
+import { COLORS, FONTS, SPACING, RADIUS, SHADOWS } from '../../config/theme';
+import { LoadingScreen, GlassCard } from '../../components/UIComponents';
+import { BalanceCard, TransactionRow } from '../../components/Cards';
+import { calculateGroupBalances, simplifyDebts, formatCurrency } from '../../utils/splitCalculator';
 
 export default function SummaryScreen({ route, navigation }) {
-  const { groupId, groupName, members: initMembers } = route.params;
+  const { groupId } = route.params || {};
   const { user } = useAuth();
+  const [tab,      setTab]      = useState('balances');
+  const [members,  setMembers]  = useState([]);
+  const [expenses, setExpenses] = useState([]);
+  const [loading,  setLoading]  = useState(true);
 
-  const [expenses,     setExpenses]     = useState([]);
-  const [members,      setMembers]      = useState(initMembers || []);
-  const [memberSummary, setMemberSummary] = useState([]);
-  const [debts,        setDebts]        = useState([]);
-  const [loading,      setLoading]      = useState(true);
-  const [activeTab,    setActiveTab]    = useState('balances'); // balances | settle | categories
-
-  useEffect(() => { loadData(); }, [groupId]);
+  useEffect(() => { loadData(); }, []);
 
   async function loadData() {
-    try {
-      // Fetch members if not passed
-      let finalMembers = members;
-      if (!finalMembers?.length) {
-        const { data } = await supabase
-          .from(TABLES.GROUP_MEMBERS)
-          .select('user_id, user:users(id, full_name, email)')
-          .eq('group_id', groupId);
-        finalMembers = data || [];
-        setMembers(finalMembers);
-      }
-
-      // Fetch all expenses with splits
-      const { data: exps } = await supabase
-        .from(TABLES.EXPENSES)
-        .select('*, splits:expense_splits(*)')
-        .eq('group_id', groupId);
-
-      const expenses = exps || [];
-      setExpenses(expenses);
-
-      const memberIds = finalMembers.map(m => m.user_id);
-      const bals      = calculateGroupBalances(expenses, memberIds);
-      const summary   = calculateMemberSummary(expenses, finalMembers.map(m => ({
-        ...m,
-        ...(m.user || {}),
-      })));
-      const debtList  = simplifyDebts(bals);
-
-      setMemberSummary(summary);
-      setDebts(debtList);
-    } finally {
-      setLoading(false);
-    }
+    const [{ data: mData }, { data: eData }] = await Promise.all([
+      supabase.from(TABLES.GROUP_MEMBERS).select('*, user:users(id, full_name, email)').eq('group_id', groupId),
+      supabase.from(TABLES.EXPENSES).select('*, splits:expense_splits(*)').eq('group_id', groupId),
+    ]);
+    setMembers((mData || []).map(m => ({ ...m.user })));
+    setExpenses(eData || []);
+    setLoading(false);
   }
-
-  // Category breakdown
-  const categoryTotals = expenses.reduce((acc, e) => {
-    acc[e.category] = (acc[e.category] || 0) + e.amount;
-    return acc;
-  }, {});
-  const totalSpend = Object.values(categoryTotals).reduce((a, b) => a + b, 0);
-
-  // Member map for debt display
-  const memberMap = members.reduce((acc, m) => {
-    acc[m.user_id] = m.user || m;
-    return acc;
-  }, {});
 
   if (loading) return <LoadingScreen message="Calculating balances..." />;
 
+  const balances      = calculateGroupBalances(members, expenses);
+  const transactions  = simplifyDebts(balances);
+  const memberMap     = Object.fromEntries(members.map(m => [m.id, m]));
+
+  const categoryTotals = CATEGORIES.map(c => {
+    const total = expenses.filter(e => e.category === c.id).reduce((a, e) => a + e.amount, 0);
+    return { ...c, total };
+  }).filter(c => c.total > 0).sort((a, b) => b.total - a.total);
+  const grandTotal = categoryTotals.reduce((a, c) => a + c.total, 0);
+
+  const tabs = [
+    { id: 'balances',     label: 'Balances',   icon: <Scale size={14} color={tab === 'balances'     ? COLORS.babyPink : COLORS.lavender} strokeWidth={2} /> },
+    { id: 'settle',       label: 'Settle Up',  icon: <ArrowRight size={14} color={tab === 'settle'   ? COLORS.babyPink : COLORS.lavender} strokeWidth={2} /> },
+    { id: 'categories',   label: 'Categories', icon: <BarChart3 size={14} color={tab === 'categories'? COLORS.babyPink : COLORS.lavender} strokeWidth={2} /> },
+  ];
+
   return (
-    <LinearGradient colors={COLORS.gradients.dark} style={styles.root}>
-      {/* ── Header ── */}
-      <View style={styles.header}>
-        <TouchableOpacity onPress={() => navigation.goBack()}>
-          <Text style={styles.backText}>← Back</Text>
+    <LinearGradient colors={['#1e0a30', '#130520']} style={styles.root}>
+      <LinearGradient colors={['rgba(45,16,64,0.95)', 'transparent']} style={styles.header}>
+        <TouchableOpacity onPress={() => navigation.goBack()} style={styles.backBtn}>
+          <ArrowLeft size={22} color={COLORS.white} strokeWidth={2} />
         </TouchableOpacity>
-        <Text style={styles.title}>{groupName}</Text>
-        <Text style={styles.sub}>Group Summary</Text>
-      </View>
+        <Text style={styles.headerTitle}>Summary</Text>
+        <View style={{ width: 40 }} />
+      </LinearGradient>
 
-      {/* ── Stats Row ── */}
-      <View style={styles.statsRow}>
-        <GlassCard style={styles.statCard}>
-          <Text style={styles.statValue}>{formatCurrency(totalSpend)}</Text>
-          <Text style={styles.statLabel}>Total Spend</Text>
-        </GlassCard>
-        <GlassCard style={styles.statCard}>
-          <Text style={styles.statValue}>{expenses.length}</Text>
-          <Text style={styles.statLabel}>Expenses</Text>
-        </GlassCard>
-        <GlassCard style={styles.statCard}>
-          <Text style={styles.statValue}>{members.length}</Text>
-          <Text style={styles.statLabel}>Members</Text>
-        </GlassCard>
-      </View>
-
-      {/* ── Tabs ── */}
-      <View style={styles.tabs}>
-        {[
-          { key: 'balances',   label: '⚖️ Balances' },
-          { key: 'settle',     label: '💸 Settle Up' },
-          { key: 'categories', label: '🏷️ Categories' },
-        ].map(tab => (
-          <TouchableOpacity
-            key={tab.key}
-            style={[styles.tab, activeTab === tab.key && styles.tabActive]}
-            onPress={() => setActiveTab(tab.key)}
-          >
-            <Text style={[styles.tabText, activeTab === tab.key && styles.tabTextActive]}>
-              {tab.label}
-            </Text>
+      {/* Tabs */}
+      <View style={styles.tabBar}>
+        {tabs.map(t => (
+          <TouchableOpacity key={t.id} onPress={() => setTab(t.id)}
+            style={[styles.tab, tab === t.id && styles.tabActive]}>
+            {t.icon}
+            <Text style={[styles.tabText, tab === t.id && styles.tabTextActive]}>{t.label}</Text>
           </TouchableOpacity>
         ))}
       </View>
 
-      <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.scroll}>
+      <ScrollView contentContainerStyle={styles.scroll} showsVerticalScrollIndicator={false}>
 
-        {/* ── BALANCES TAB ── */}
-        {activeTab === 'balances' && (
-          <>
-            <SectionHeader title="Member Balances" />
-            {memberSummary.map((m, i) => (
-              <BalanceCard key={m.user_id || i} member={m} />
-            ))}
-          </>
+        {tab === 'balances' && balances.map(m => (
+          <BalanceCard key={m.id} member={m} />
+        ))}
+
+        {tab === 'settle' && (
+          transactions.length === 0 ? (
+            <GlassCard style={styles.emptyCard}>
+              <Scale size={32} color={COLORS.babyPink} strokeWidth={1.5} />
+              <Text style={styles.emptyTitle}>All settled up!</Text>
+              <Text style={styles.emptyText}>No payments needed</Text>
+            </GlassCard>
+          ) : (
+            transactions.map((t, i) => <TransactionRow key={i} transaction={t} memberMap={memberMap} />)
+          )
         )}
 
-        {/* ── SETTLE UP TAB ── */}
-        {activeTab === 'settle' && (
+        {tab === 'categories' && (
           <>
-            <SectionHeader title="Who Pays Whom" />
-            {debts.length === 0 ? (
-              <GlassCard style={styles.settledCard}>
-                <Text style={styles.settledEmoji}>🎉</Text>
-                <Text style={styles.settledTitle}>All settled up!</Text>
-                <Text style={styles.settledSub}>No payments needed. Everyone's even.</Text>
+            <GlassCard style={styles.totalCard}>
+              <Text style={styles.totalLabel}>Total Spent</Text>
+              <Text style={styles.totalAmount}>{formatCurrency(grandTotal)}</Text>
+            </GlassCard>
+            {categoryTotals.map(c => (
+              <GlassCard key={c.id} style={styles.catCard}>
+                <View style={styles.catRow}>
+                  <View style={[styles.catDot, { backgroundColor: c.color }]} />
+                  <Text style={styles.catName}>{c.label}</Text>
+                  <Text style={styles.catAmount}>{formatCurrency(c.total)}</Text>
+                  <Text style={styles.catPct}>{grandTotal > 0 ? ((c.total / grandTotal) * 100).toFixed(0) : 0}%</Text>
+                </View>
+                <View style={styles.progressBg}>
+                  <View style={[styles.progressFill, { width: `${grandTotal > 0 ? (c.total / grandTotal) * 100 : 0}%`, backgroundColor: c.color }]} />
+                </View>
               </GlassCard>
-            ) : (
-              debts.map((debt, i) => {
-                const from = memberMap[debt.from] || {};
-                const to   = memberMap[debt.to]   || {};
-                return (
-                  <GlassCard key={i} style={styles.debtCard}>
-                    <View style={styles.debtRow}>
-                      <View style={styles.debtPerson}>
-                        <Avatar name={from.full_name || '?'} size={44} />
-                        <Text style={styles.debtName} numberOfLines={1}>{from.full_name || 'Unknown'}</Text>
-                      </View>
-                      <View style={styles.debtMiddle}>
-                        <Text style={styles.debtArrow}>→</Text>
-                        <Text style={styles.debtAmt}>{formatCurrency(debt.amount)}</Text>
-                        <Text style={styles.debtLabel}>pays</Text>
-                      </View>
-                      <View style={styles.debtPerson}>
-                        <Avatar name={to.full_name || '?'} size={44} />
-                        <Text style={styles.debtName} numberOfLines={1}>{to.full_name || 'Unknown'}</Text>
-                      </View>
-                    </View>
-                  </GlassCard>
-                );
-              })
-            )}
-          </>
-        )}
-
-        {/* ── CATEGORIES TAB ── */}
-        {activeTab === 'categories' && (
-          <>
-            <SectionHeader title="Spending by Category" />
-            {Object.entries(categoryTotals)
-              .sort((a, b) => b[1] - a[1])
-              .map(([catId, total]) => {
-                const cat = CATEGORIES.find(c => c.id === catId) || CATEGORIES[CATEGORIES.length - 1];
-                const pct = totalSpend > 0 ? (total / totalSpend) * 100 : 0;
-                return (
-                  <GlassCard key={catId} style={styles.catCard}>
-                    <View style={styles.catRow}>
-                      <View style={[styles.catIcon, { backgroundColor: cat.color + '22' }]}>
-                        <Text style={styles.catEmoji}>{cat.icon}</Text>
-                      </View>
-                      <View style={styles.catInfo}>
-                        <Text style={styles.catName}>{cat.label}</Text>
-                        <View style={styles.progressTrack}>
-                          <View style={[styles.progressFill, { width: `${pct}%`, backgroundColor: cat.color }]} />
-                        </View>
-                      </View>
-                      <View style={styles.catRight}>
-                        <Text style={styles.catAmt}>{formatCurrency(total)}</Text>
-                        <Text style={styles.catPct}>{pct.toFixed(0)}%</Text>
-                      </View>
-                    </View>
-                  </GlassCard>
-                );
-              })}
+            ))}
           </>
         )}
 
@@ -213,42 +115,28 @@ export default function SummaryScreen({ route, navigation }) {
 }
 
 const styles = StyleSheet.create({
-  root:    { flex: 1 },
-  header:  { padding: SPACING[6], paddingTop: SPACING[12] },
-  backText:{ color: COLORS.purple[300], fontSize: FONTS.sizes.base, fontWeight: '600', marginBottom: SPACING[3] },
-  title:   { color: COLORS.white, fontSize: FONTS.sizes['2xl'], fontWeight: '900' },
-  sub:     { color: COLORS.text.muted, fontSize: FONTS.sizes.sm, marginTop: 2 },
-  statsRow:{ flexDirection: 'row', gap: SPACING[3], paddingHorizontal: SPACING[5], marginBottom: SPACING[4] },
-  statCard:{ flex: 1, alignItems: 'center', padding: SPACING[4] },
-  statValue:{ color: COLORS.white, fontSize: FONTS.sizes.xl, fontWeight: '900' },
-  statLabel:{ color: COLORS.text.muted, fontSize: FONTS.sizes.xs, marginTop: 4 },
-  tabs:    { flexDirection: 'row', paddingHorizontal: SPACING[5], marginBottom: SPACING[4], gap: SPACING[2] },
-  tab:     { flex: 1, paddingVertical: SPACING[2] + 2, alignItems: 'center', borderRadius: RADIUS.md, backgroundColor: COLORS.background.card, borderWidth: 1, borderColor: 'transparent' },
-  tabActive:{ borderColor: COLORS.purple[500], backgroundColor: COLORS.purple[900] + '66' },
-  tabText: { color: COLORS.text.muted, fontSize: 11, fontWeight: '600' },
-  tabTextActive: { color: COLORS.purple[300] },
-  scroll:  { paddingHorizontal: SPACING[5] },
-  settledCard: { alignItems: 'center', padding: SPACING[8] },
-  settledEmoji:{ fontSize: 56, marginBottom: SPACING[4] },
-  settledTitle:{ color: COLORS.white, fontSize: FONTS.sizes.xl, fontWeight: '800' },
-  settledSub:  { color: COLORS.text.muted, fontSize: FONTS.sizes.base, marginTop: SPACING[2], textAlign: 'center' },
-  debtCard:{ marginBottom: SPACING[3] },
-  debtRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
-  debtPerson: { alignItems: 'center', width: 80 },
-  debtName:   { color: COLORS.text.secondary, fontSize: FONTS.sizes.xs, marginTop: SPACING[1], textAlign: 'center' },
-  debtMiddle: { alignItems: 'center', flex: 1 },
-  debtArrow:  { color: COLORS.purple[400], fontSize: 28 },
-  debtAmt:    { color: COLORS.white, fontSize: FONTS.sizes.lg, fontWeight: '900' },
-  debtLabel:  { color: COLORS.text.muted, fontSize: FONTS.sizes.xs },
-  catCard: { marginBottom: SPACING[3] },
-  catRow:  { flexDirection: 'row', alignItems: 'center', gap: SPACING[3] },
-  catIcon: { width: 44, height: 44, borderRadius: RADIUS.md, alignItems: 'center', justifyContent: 'center' },
-  catEmoji:{ fontSize: 22 },
-  catInfo: { flex: 1 },
-  catName: { color: COLORS.text.primary, fontSize: FONTS.sizes.base, fontWeight: '600', marginBottom: SPACING[2] },
-  progressTrack: { height: 6, backgroundColor: COLORS.background.elevated, borderRadius: 3, overflow: 'hidden' },
-  progressFill:  { height: 6, borderRadius: 3 },
-  catRight:{ alignItems: 'flex-end' },
-  catAmt:  { color: COLORS.white, fontSize: FONTS.sizes.base, fontWeight: '700' },
-  catPct:  { color: COLORS.text.muted, fontSize: FONTS.sizes.xs, marginTop: 2 },
+  root:        { flex: 1 },
+  header:      { flexDirection: 'row', alignItems: 'center', padding: SPACING[5], paddingTop: SPACING[12] },
+  backBtn:     { width: 40, height: 40, alignItems: 'center', justifyContent: 'center' },
+  headerTitle: { flex: 1, color: COLORS.white, fontSize: FONTS.sizes.lg, fontWeight: '800', textAlign: 'center' },
+  tabBar:      { flexDirection: 'row', marginHorizontal: SPACING[5], marginBottom: SPACING[4], backgroundColor: COLORS.background.card, borderRadius: RADIUS.xl, padding: SPACING[1], borderWidth: 1, borderColor: 'rgba(255,173,208,0.15)' },
+  tab:         { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 4, paddingVertical: SPACING[3], borderRadius: RADIUS.lg },
+  tabActive:   { backgroundColor: 'rgba(255,173,208,0.15)' },
+  tabText:     { color: COLORS.lavender, fontSize: FONTS.sizes.xs, fontWeight: '600' },
+  tabTextActive:{ color: COLORS.babyPink, fontWeight: '700' },
+  scroll:      { padding: SPACING[5], paddingTop: 0, gap: SPACING[3] },
+  emptyCard:   { alignItems: 'center', padding: SPACING[8], gap: SPACING[3] },
+  emptyTitle:  { color: COLORS.white,    fontSize: FONTS.sizes.lg, fontWeight: '700' },
+  emptyText:   { color: COLORS.lavender, fontSize: FONTS.sizes.base },
+  totalCard:   { alignItems: 'center', padding: SPACING[5] },
+  totalLabel:  { color: COLORS.lavender, fontSize: FONTS.sizes.sm, marginBottom: 4 },
+  totalAmount: { color: COLORS.white, fontSize: FONTS.sizes['3xl'], fontWeight: '900' },
+  catCard:     { gap: SPACING[3] },
+  catRow:      { flexDirection: 'row', alignItems: 'center', gap: SPACING[3] },
+  catDot:      { width: 10, height: 10, borderRadius: 5 },
+  catName:     { flex: 1, color: COLORS.white, fontSize: FONTS.sizes.sm, fontWeight: '600' },
+  catAmount:   { color: COLORS.white, fontSize: FONTS.sizes.sm, fontWeight: '700' },
+  catPct:      { color: COLORS.lavender, fontSize: FONTS.sizes.xs, width: 32, textAlign: 'right' },
+  progressBg:  { height: 6, backgroundColor: 'rgba(255,255,255,0.1)', borderRadius: 3, overflow: 'hidden' },
+  progressFill:{ height: '100%', borderRadius: 3 },
 });

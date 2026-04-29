@@ -257,13 +257,13 @@ export function Avatar({ name = '', size = 40, style }) {
 const styles = StyleSheet.create({
   gradBtn: {
     borderRadius:      RADIUS.lg,
-    paddingVertical:   SPACING[4],
-    paddingHorizontal: SPACING[6],
+    paddingVertical:   SPACING[3],
+    paddingHorizontal: SPACING[5],
   },
   gradBtnInner: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center' },
   gradBtnIcon:  { fontSize: 18, marginRight: SPACING[2] },
   gradBtnText:  {
-    fontSize:      FONTS.sizes.md,
+    fontSize:      FONTS.sizes.base,
     fontWeight:    '700',
     letterSpacing: 0.5,
   },

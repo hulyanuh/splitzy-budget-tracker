@@ -3,7 +3,6 @@
 // ═══════════════════════════════════════════════════════════════════════════
 
 export const COLORS = {
-  // Primary palette
   purple: {
     50:  '#fdf4ff',
     100: '#f9e8ff',
@@ -33,13 +32,13 @@ export const COLORS = {
     600: '#db2777',
   },
 
-  // Semantic colors
+  // Lightened backgrounds
   background: {
-    primary:   '#130520',
-    secondary: '#1c0a32',
-    card:      '#25103d',
-    elevated:  '#301550',
-    input:     '#1c0a32',
+    primary:   '#271040',   // was #130520 — noticeably lighter
+    secondary: '#321555',   // was #1c0a32
+    card:      '#3c1a62',   // was #25103d
+    elevated:  '#4a2275',   // was #301550
+    input:     '#2d1450',   // was #1c0a32
   },
   text: {
     primary:     '#ffffff',
@@ -58,15 +57,14 @@ export const COLORS = {
     infoBg:      '#0a1628',
   },
 
-  // Gradients
   gradients: {
     primary:     ['#9b59d0', '#3b82f6'],
     secondary:   ['#ffadd0', '#c084fc'],
     accent:      ['#ffc2d9', '#f0abff'],
     soft:        ['#ffe4ef', '#f0d6ff'],
-    dark:        ['#1c0a32', '#130520'],
-    card:        ['#301550', '#1c0a32'],
-    cardPink:    ['#3d1a50', '#251035'],
+    dark:        ['#321555', '#271040'],   // lightened
+    card:        ['#4a2275', '#321555'],   // lightened
+    cardPink:    ['#4d2268', '#371550'],   // lightened
     danger:      ['#dc2626', '#991b1b'],
     success:     ['#15803d', '#052e16'],
     gold:        ['#f59e0b', '#d97706'],
@@ -75,7 +73,6 @@ export const COLORS = {
     pinkWhite:   ['#fff0f6', '#ffc2d9'],
   },
 
-  // Component colors
   border:      'rgba(255, 173, 208, 0.25)',
   borderLight: 'rgba(255, 255, 255, 0.12)',
   borderWhite: 'rgba(255, 255, 255, 0.2)',
@@ -93,7 +90,6 @@ export const FONTS = {
   medium:      'System',
   semibold:    'System',
   bold:        'System',
-
   sizes: {
     xs:    11,
     sm:    13,
@@ -106,7 +102,6 @@ export const FONTS = {
     '4xl': 36,
     '5xl': 44,
   },
-
   lineHeights: {
     tight:   1.2,
     normal:  1.5,
@@ -130,40 +125,40 @@ export const SPACING = {
 };
 
 export const RADIUS = {
-  sm:   8,
-  md:   12,
-  lg:   16,
-  xl:   20,
+  sm:    8,
+  md:    12,
+  lg:    16,
+  xl:    20,
   '2xl': 24,
-  full: 9999,
+  full:  9999,
 };
 
 export const SHADOWS = {
   sm: {
     shadowColor: '#ffadd0',
     shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.25,
+    shadowOpacity: 0.2,
     shadowRadius: 4,
     elevation: 3,
   },
   md: {
     shadowColor: '#c084fc',
     shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.35,
+    shadowOpacity: 0.3,
     shadowRadius: 8,
     elevation: 6,
   },
   lg: {
     shadowColor: '#9b59d0',
     shadowOffset: { width: 0, height: 8 },
-    shadowOpacity: 0.45,
+    shadowOpacity: 0.4,
     shadowRadius: 16,
     elevation: 10,
   },
   glow: {
     shadowColor: '#ffadd0',
     shadowOffset: { width: 0, height: 0 },
-    shadowOpacity: 0.6,
+    shadowOpacity: 0.5,
     shadowRadius: 20,
     elevation: 12,
   },
