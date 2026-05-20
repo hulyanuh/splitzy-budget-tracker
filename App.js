@@ -8,12 +8,20 @@ import { AuthProvider } from './src/context/AuthContext';
 import AppNavigator    from './src/navigation/AppNavigator';
 
 // Keep splash screen visible while we bootstrap
-SplashScreen.preventAutoHideAsync();
+try {
+  SplashScreen.preventAutoHideAsync().catch(() => {});
+} catch (e) {
+  console.warn('SplashScreen.preventAutoHideAsync failed:', e);
+}
 
 export default function App() {
   useEffect(() => {
     // Hide splash once fonts/assets are ready
-    SplashScreen.hideAsync();
+    try {
+      SplashScreen.hideAsync().catch(() => {});
+    } catch (e) {
+      console.warn('SplashScreen.hideAsync failed:', e);
+    }
   }, []);
 
   return (

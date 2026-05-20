@@ -21,6 +21,8 @@ import ExpenseDetailScreen   from '../screens/expenses/ExpenseDetailScreen';
 import SummaryScreen         from '../screens/summary/SummaryScreen';
 import SettingsScreen        from '../screens/settings/SettingsScreen';
 
+import GlobalExpenseListScreen from '../screens/expenses/GlobalExpenseListScreen';
+
 const Stack = createNativeStackNavigator();
 const Tab   = createBottomTabNavigator();
 
@@ -107,6 +109,7 @@ function AppStack() {
       <Stack.Screen name="EditGroup"   component={CreateEditGroupScreen} />
       <Stack.Screen name="AddExpense"     component={AddExpenseScreen}    options={{ animation: 'slide_from_bottom' }} />
       <Stack.Screen name="ExpenseDetail"  component={ExpenseDetailScreen} />
+      <Stack.Screen name="GlobalExpenseList" component={GlobalExpenseListScreen} />
       <Stack.Screen name="Summary"        component={SummaryScreen}       options={{ animation: 'slide_from_bottom' }} />
     </Stack.Navigator>
   );

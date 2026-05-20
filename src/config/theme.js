@@ -1,6 +1,7 @@
 // ═══════════════════════════════════════════════════════════════════════════
 // 🎨 SPLITZY DESIGN SYSTEM — Baby Pink & White Edition
 // ═══════════════════════════════════════════════════════════════════════════
+import { Platform } from 'react-native';
 
 export const COLORS = {
   purple: {
@@ -139,28 +140,28 @@ export const SHADOWS = {
     shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.2,
     shadowRadius: 4,
-    elevation: 3,
+    elevation: Platform.OS === 'ios' ? 3 : 0,
   },
   md: {
     shadowColor: '#c084fc',
     shadowOffset: { width: 0, height: 4 },
     shadowOpacity: 0.3,
     shadowRadius: 8,
-    elevation: 6,
+    elevation: Platform.OS === 'ios' ? 6 : 0,
   },
   lg: {
     shadowColor: '#9b59d0',
     shadowOffset: { width: 0, height: 8 },
     shadowOpacity: 0.4,
     shadowRadius: 16,
-    elevation: 10,
+    elevation: Platform.OS === 'ios' ? 10 : 0,
   },
   glow: {
     shadowColor: '#ffadd0',
     shadowOffset: { width: 0, height: 0 },
     shadowOpacity: 0.5,
     shadowRadius: 20,
-    elevation: 12,
+    elevation: Platform.OS === 'ios' ? 12 : 0,
   },
 };
 

@@ -48,7 +48,7 @@ export default function AddExpenseScreen({ route, navigation }) {
   async function handleSubmit() {
     const amt = parseFloat(amount);
     if (!title.trim() || !amt) { Alert.alert('Missing Info', 'Please fill in title and amount.'); return; }
-    if (splitType === SPLIT_TYPES.CUSTOM && !validateCustomSplit(splits, amt)) {
+    if (splitType === SPLIT_TYPES.CUSTOM && !validateCustomSplit(amt, splits)) {
       Alert.alert('Invalid Split', 'Custom splits must add up to the total amount.'); return;
     }
     setLoading(true);

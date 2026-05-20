@@ -39,13 +39,16 @@ export function calculateGroupBalances(expenses, memberIds) {
     const payerId = expense.paid_by;
     if (!balances.hasOwnProperty(payerId)) continue;
 
-    // Payer gets credited the full amount
-    balances[payerId] += expense.amount;
-
-    // Each split member gets debited their share
+    // Only debit/credit active (unsettled) splits
     for (const split of (expense.splits || [])) {
+      if (split.is_settled) continue;
+      
+      // Don't count payer's own split as a debt to themselves
+      if (split.user_id === payerId) continue;
+
       if (balances.hasOwnProperty(split.user_id)) {
         balances[split.user_id] -= split.amount;
+        balances[payerId] += split.amount;
       }
     }
   }
@@ -93,8 +96,19 @@ export function simplifyDebts(balances) {
 /**
  * Format currency amount
  */
-export function formatCurrency(amount, currency = '₱') {
-  return `${currency}${Math.abs(parseFloat(amount || 0)).toFixed(2)}`;
+const CURRENCY_SYMBOLS = {
+  PHP: '₱',
+  USD: '$',
+  EUR: '€',
+  SGD: 'S$',
+  JPY: '¥',
+};
+
+export function formatCurrency(amount, currencyCode = 'PHP') {
+  const symbol = CURRENCY_SYMBOLS[currencyCode] || currencyCode || '₱';
+  const val = parseFloat(amount || 0);
+  const formatted = Math.abs(val).toFixed(2);
+  return val < 0 ? `-${symbol}${formatted}` : `${symbol}${formatted}`;
 }
 
 /**
@@ -117,18 +131,31 @@ export function calculateMemberSummary(expenses, members) {
   return members.map(member => {
     let totalPaid = 0;
     let totalShare = 0;
+    let activePaid = 0;
+    let activeShare = 0;
+    const memberId = member.id || member.user_id;
 
     for (const expense of expenses) {
-      if (expense.paid_by === member.user_id) {
+      if (expense.paid_by === memberId) {
         totalPaid += expense.amount;
+        // Receivables: outstanding splits from other people
+        const otherSplitsUnsettled = (expense.splits || []).filter(s => s.user_id !== expense.paid_by && !s.is_settled);
+        activePaid += otherSplitsUnsettled.reduce((sum, s) => sum + s.amount, 0);
       }
-      const split = (expense.splits || []).find(s => s.user_id === member.user_id);
-      if (split) totalShare += split.amount;
+      const split = (expense.splits || []).find(s => s.user_id === memberId);
+      if (split) {
+        totalShare += split.amount;
+        // Payables: our split if not settled and we are not the payer
+        if (!split.is_settled && expense.paid_by !== memberId) {
+          activeShare += split.amount;
+        }
+      }
     }
 
-    const balance = totalPaid - totalShare;
+    const balance = activePaid - activeShare;
     return {
       ...member,
+      id: memberId,
       totalPaid:  parseFloat(totalPaid.toFixed(2)),
       totalShare: parseFloat(totalShare.toFixed(2)),
       balance:    parseFloat(balance.toFixed(2)),

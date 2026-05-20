@@ -10,10 +10,19 @@ import { Avatar, GlassCard } from './UIComponents';
 // ─────────────────────────────────────────────────────────────────────────────
 // 💸 EXPENSE CARD
 // ─────────────────────────────────────────────────────────────────────────────
-export function ExpenseCard({ expense, onPress, currentUserId }) {
+export function ExpenseCard({ expense, onPress, currentUserId, currency = 'PHP' }) {
   const category = CATEGORIES.find(c => c.id === expense.category) || CATEGORIES[CATEGORIES.length - 1];
   const isPayer  = expense.paid_by === currentUserId;
-  const myShare  = expense.splits?.find(s => s.user_id === currentUserId)?.amount ?? 0;
+  const mySplit  = expense.splits?.find(s => s.user_id === currentUserId);
+  const myShare  = mySplit?.amount ?? 0;
+  const isMyShareSettled = mySplit?.is_settled ?? false;
+
+  const displayAmount = isPayer
+    ? (expense.splits?.filter(s => s.user_id !== currentUserId && !s.is_settled).reduce((a, s) => a + s.amount, 0) || 0)
+    : (isMyShareSettled ? 0 : myShare);
+
+  const showSuccessStyle = isPayer || isMyShareSettled || displayAmount === 0;
+  const sign = displayAmount === 0 ? '' : (isPayer ? '+' : '-');
 
   return (
     <GlassCard onPress={onPress} style={styles.expenseCard}>
@@ -34,10 +43,16 @@ export function ExpenseCard({ expense, onPress, currentUserId }) {
           </Text>
         </View>
         <View style={styles.expenseAmounts}>
-          <Text style={styles.totalAmt}>{formatCurrency(expense.amount)}</Text>
-          <View style={[styles.myShareBadge, isPayer ? styles.payerBadge : styles.oweBadge]}>
-            <Text style={[styles.myShareText, { color: isPayer ? COLORS.status.success : COLORS.status.error }]}>
-              {isPayer ? '+' : '-'}{formatCurrency(myShare)}
+          <Text style={styles.totalAmt}>{formatCurrency(expense.amount, currency)}</Text>
+          <View style={[
+            styles.myShareBadge, 
+            showSuccessStyle ? styles.payerBadge : styles.oweBadge
+          ]}>
+            <Text style={[
+              styles.myShareText, 
+              { color: showSuccessStyle ? COLORS.status.success : COLORS.status.error }
+            ]}>
+              {sign}{formatCurrency(displayAmount, currency)}
             </Text>
           </View>
         </View>

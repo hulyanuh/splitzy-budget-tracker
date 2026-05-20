@@ -1,13 +1,14 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useCallback } from 'react';
 import { View, Text, StyleSheet, ScrollView, TouchableOpacity } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
+import { useFocusEffect } from '@react-navigation/native';
 import { ArrowLeft, Scale, ArrowRight, BarChart3 } from 'lucide-react-native';
 import { useAuth } from '../../context/AuthContext';
 import { supabase, TABLES, CATEGORIES } from '../../config/supabase';
 import { COLORS, FONTS, SPACING, RADIUS, SHADOWS } from '../../config/theme';
 import { LoadingScreen, GlassCard } from '../../components/UIComponents';
 import { BalanceCard, TransactionRow } from '../../components/Cards';
-import { calculateGroupBalances, simplifyDebts, formatCurrency } from '../../utils/splitCalculator';
+import { calculateGroupBalances, simplifyDebts, calculateMemberSummary, formatCurrency } from '../../utils/splitCalculator';
 
 export default function SummaryScreen({ route, navigation }) {
   const { groupId } = route.params || {};
@@ -17,22 +18,43 @@ export default function SummaryScreen({ route, navigation }) {
   const [expenses, setExpenses] = useState([]);
   const [loading,  setLoading]  = useState(true);
 
-  useEffect(() => { loadData(); }, []);
+  useFocusEffect(useCallback(() => { loadData(); }, []));
 
   async function loadData() {
-    const [{ data: mData }, { data: eData }] = await Promise.all([
-      supabase.from(TABLES.GROUP_MEMBERS).select('*, user:users(id, full_name, email)').eq('group_id', groupId),
-      supabase.from(TABLES.EXPENSES).select('*, splits:expense_splits(*)').eq('group_id', groupId),
-    ]);
-    setMembers((mData || []).map(m => ({ ...m.user })));
+    let mData = [], eData = [];
+    if (groupId) {
+      const [mRes, eRes] = await Promise.all([
+        supabase.from(TABLES.GROUP_MEMBERS).select('*, user:users(id, full_name, email)').eq('group_id', groupId),
+        supabase.from(TABLES.EXPENSES).select('*, splits:expense_splits(*)').eq('group_id', groupId),
+      ]);
+      mData = mRes.data; eData = eRes.data;
+    } else {
+      // Global Summary across all groups
+      const { data: myGroups } = await supabase.from(TABLES.GROUP_MEMBERS).select('group_id').eq('user_id', user.id);
+      if (myGroups && myGroups.length > 0) {
+        const groupIds = myGroups.map(g => g.group_id);
+        const [mRes, eRes] = await Promise.all([
+          supabase.from(TABLES.GROUP_MEMBERS).select('*, user:users(id, full_name, email)').in('group_id', groupIds),
+          supabase.from(TABLES.EXPENSES).select('*, splits:expense_splits(*)').in('group_id', groupIds),
+        ]);
+        mData = mRes.data; eData = eRes.data;
+        // Deduplicate members across multiple groups
+        const uniqueMembers = {};
+        (mData || []).forEach(m => { if (m.user) uniqueMembers[m.user.id] = m.user; });
+        mData = Object.values(uniqueMembers);
+      }
+    }
+    
+    setMembers((mData || []).map(m => (m.user ? { ...m.user } : m)));
     setExpenses(eData || []);
     setLoading(false);
   }
 
   if (loading) return <LoadingScreen message="Calculating balances..." />;
 
-  const balances      = calculateGroupBalances(members, expenses);
-  const transactions  = simplifyDebts(balances);
+  const balancesMap   = calculateGroupBalances(expenses, members.map(m => m.id));
+  const memberStats   = calculateMemberSummary(expenses, members);
+  const transactions  = simplifyDebts(balancesMap);
   const memberMap     = Object.fromEntries(members.map(m => [m.id, m]));
 
   const categoryTotals = CATEGORIES.map(c => {
@@ -40,6 +62,14 @@ export default function SummaryScreen({ route, navigation }) {
     return { ...c, total };
   }).filter(c => c.total > 0).sort((a, b) => b.total - a.total);
   const grandTotal = categoryTotals.reduce((a, c) => a + c.total, 0);
+
+  const now = new Date();
+  const thisMonthTotal = expenses.filter(e => {
+    const d = new Date(e.date);
+    return d.getMonth() === now.getMonth() && d.getFullYear() === now.getFullYear();
+  }).reduce((a, e) => a + e.amount, 0);
+
+  const myBalance = balancesMap[user.id] || 0;
 
   const tabs = [
     { id: 'balances',     label: 'Balances',   icon: <Scale size={14} color={tab === 'balances'     ? COLORS.babyPink : COLORS.lavender} strokeWidth={2} /> },
@@ -57,6 +87,29 @@ export default function SummaryScreen({ route, navigation }) {
         <View style={{ width: 40 }} />
       </LinearGradient>
 
+      {/* Global Overview Card */}
+      {!groupId && (
+        <GlassCard style={{ marginHorizontal: SPACING[5], marginBottom: SPACING[4], padding: SPACING[5] }}>
+          <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginBottom: SPACING[3] }}>
+            <View>
+              <Text style={{ color: COLORS.lavender, fontSize: FONTS.sizes.xs }}>THIS MONTH</Text>
+              <Text style={{ color: COLORS.white, fontSize: FONTS.sizes.xl, fontWeight: '800' }}>{formatCurrency(thisMonthTotal)}</Text>
+            </View>
+            <View style={{ alignItems: 'flex-end' }}>
+              <Text style={{ color: COLORS.lavender, fontSize: FONTS.sizes.xs }}>ALL TIME</Text>
+              <Text style={{ color: COLORS.white, fontSize: FONTS.sizes.xl, fontWeight: '800' }}>{formatCurrency(grandTotal)}</Text>
+            </View>
+          </View>
+          <View style={{ backgroundColor: 'rgba(255,255,255,0.05)', height: 1, marginBottom: SPACING[3] }} />
+          <View style={{ alignItems: 'center' }}>
+            <Text style={{ color: COLORS.lavender, fontSize: FONTS.sizes.xs }}>MY {myBalance >= 0 ? 'RECEIVABLES' : 'DEBT'}</Text>
+            <Text style={{ color: myBalance >= 0 ? COLORS.status.success : COLORS.status.error, fontSize: FONTS.sizes['2xl'], fontWeight: '900' }}>
+              {myBalance >= 0 ? '+' : ''}{formatCurrency(myBalance)}
+            </Text>
+          </View>
+        </GlassCard>
+      )}
+
       {/* Tabs */}
       <View style={styles.tabBar}>
         {tabs.map(t => (
@@ -70,7 +123,7 @@ export default function SummaryScreen({ route, navigation }) {
 
       <ScrollView contentContainerStyle={styles.scroll} showsVerticalScrollIndicator={false}>
 
-        {tab === 'balances' && balances.map(m => (
+        {tab === 'balances' && memberStats.map(m => (
           <BalanceCard key={m.id} member={m} />
         ))}
 

@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
-import { View, Text, StyleSheet, ScrollView, TouchableOpacity, KeyboardAvoidingView, Platform, Alert } from 'react-native';
+import { View, Text, StyleSheet, ScrollView, TouchableOpacity, KeyboardAvoidingView, Platform, Alert, Image } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
-import { UserPlus, SplitSquareHorizontal } from 'lucide-react-native';
+import { UserPlus } from 'lucide-react-native';
 import { useAuth } from '../../context/AuthContext';
 import { COLORS, FONTS, SPACING, RADIUS, SHADOWS } from '../../config/theme';
 import { StyledInput, GradientButton } from '../../components/UIComponents';
@@ -43,10 +43,7 @@ export default function SignupScreen({ navigation }) {
         <ScrollView contentContainerStyle={styles.scroll} showsVerticalScrollIndicator={false}>
 
           <View style={styles.logoWrap}>
-            <LinearGradient colors={['#9b59d0', '#ffadd0']} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={styles.logoCircle}>
-              <SplitSquareHorizontal size={40} color="#fff" strokeWidth={1.8} />
-            </LinearGradient>
-            <Text style={styles.logoText}>Splitzy</Text>
+            <Image source={require('../../../assets/logo_dark.png')} style={styles.logoImage} resizeMode="contain" />
             <Text style={styles.logoSub}>Split smart. Pay easy.</Text>
           </View>
 
@@ -85,8 +82,7 @@ const styles = StyleSheet.create({
   root:       { flex: 1 },
   scroll:     { flexGrow: 1, justifyContent: 'center', padding: SPACING[6] },
   logoWrap:   { alignItems: 'center', marginBottom: SPACING[6] },
-  logoCircle: { width: 88, height: 88, borderRadius: 44, alignItems: 'center', justifyContent: 'center', marginBottom: SPACING[4] },
-  logoText:   { color: COLORS.white, fontSize: FONTS.sizes['3xl'], fontWeight: '900', letterSpacing: -1 },
+  logoImage:  { width: 160, height: 160, marginBottom: SPACING[2] },
   logoSub:    { color: COLORS.lavender, fontSize: FONTS.sizes.base, marginTop: 4 },
   card:       { borderRadius: RADIUS['2xl'], overflow: 'hidden' },
   cardGrad:   { padding: SPACING[6], borderWidth: 1, borderColor: 'rgba(255,173,208,0.15)', borderRadius: RADIUS['2xl'] },

@@ -44,16 +44,28 @@ export default function HomeScreen({ navigation }) {
     if (!mg?.length) return;
     const { data, error } = await supabase
       .from(TABLES.EXPENSES)
-      .select('*, splits:expense_splits(*), payer:users!paid_by(full_name)')
+      .select('*, splits:expense_splits(*)')
       .in('group_id', mg.map(g => g.group_id))
       .order('date', { ascending: false }).limit(5);
     if (error) { console.error(error); return; }
-    const expenses = (data || []).map(e => ({ ...e, payer_name: e.payer?.full_name }));
+    
+    // Manual fetch for users to bypass missing foreign keys
+    const payerIds = [...new Set((data || []).map(e => e.paid_by))];
+    const { data: usersData } = await supabase.from(TABLES.USERS).select('id, full_name').in('id', payerIds);
+    const usersMap = Object.fromEntries((usersData || []).map(u => [u.id, u.full_name]));
+
+    const expenses = (data || []).map(e => ({ ...e, payer_name: usersMap[e.paid_by] }));
     setRecentExpenses(expenses);
     let owed = 0, owing = 0;
     for (const exp of expenses) {
-      if (exp.paid_by === user.id) owed += exp.splits?.filter(s => s.user_id !== user.id).reduce((a, s) => a + s.amount, 0) || 0;
-      else owing += exp.splits?.find(s => s.user_id === user.id)?.amount || 0;
+      if (exp.paid_by === user.id) {
+        owed += exp.splits?.filter(s => s.user_id !== user.id && !s.is_settled).reduce((a, s) => a + s.amount, 0) || 0;
+      } else {
+        const mySplit = exp.splits?.find(s => s.user_id === user.id);
+        if (mySplit && !mySplit.is_settled) {
+          owing += mySplit.amount;
+        }
+      }
     }
     setTotalOwed(owed); setTotalOwing(owing);
   }
@@ -107,8 +119,8 @@ export default function HomeScreen({ navigation }) {
         {/* Quick Actions */}
         <View style={styles.actions}>
           <QuickAction icon={<Plus size={20} color={COLORS.babyPink} />}     label="New Group"   onPress={() => navigation.navigate('CreateGroup')} pink />
-          <QuickAction icon={<Receipt size={20} color={COLORS.lavender} />}  label="Expenses"    onPress={() => navigation.navigate('GroupList')} />
-          <QuickAction icon={<LayoutGrid size={20} color={COLORS.lavender}/>} label="Summary"    onPress={() => navigation.navigate('GroupList')} />
+          <QuickAction icon={<Receipt size={20} color={COLORS.lavender} />}  label="Expenses"    onPress={() => navigation.navigate('GlobalExpenseList')} />
+          <QuickAction icon={<LayoutGrid size={20} color={COLORS.lavender}/>} label="Summary"    onPress={() => navigation.navigate('Summary')} />
           <QuickAction icon={<Users size={20} color={COLORS.lavender} />}    label="Groups"      onPress={() => navigation.navigate('GroupList')} />
         </View>
 

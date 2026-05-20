@@ -1,8 +1,10 @@
-import React, { useState } from 'react';
-import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Alert, Switch } from 'react-native';
+import React, { useState, useEffect, useCallback } from 'react';
+import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Alert, Switch, Modal, TextInput } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
-import { Pencil, Lock, Bell, ChevronsUpDown, Users, Receipt, CheckCircle, LogOut, ChevronRight, X, Check } from 'lucide-react-native';
+import { useFocusEffect } from '@react-navigation/native';
+import { Pencil, Lock, Bell, Users, Receipt, CheckCircle, LogOut, ChevronRight, X, Check } from 'lucide-react-native';
 import { useAuth } from '../../context/AuthContext';
+import { supabase, TABLES } from '../../config/supabase';
 import { COLORS, FONTS, SPACING, RADIUS, SHADOWS } from '../../config/theme';
 import { StyledInput, Avatar } from '../../components/UIComponents';
 
@@ -12,6 +14,48 @@ export default function SettingsScreen({ navigation }) {
   const [fullName,     setFullName]     = useState(profile?.full_name || '');
   const [saving,       setSaving]       = useState(false);
   const [notifications,setNotifications]= useState(true);
+
+  // Stats
+  const [groupCount,   setGroupCount]   = useState(0);
+  const [expenseCount, setExpenseCount] = useState(0);
+  const [settledCount, setSettledCount] = useState(0);
+
+  // Password change modal
+  const [showPwModal,  setShowPwModal]  = useState(false);
+  const [currentPw,    setCurrentPw]    = useState('');
+  const [newPw,        setNewPw]        = useState('');
+  const [confirmPw,    setConfirmPw]    = useState('');
+  const [pwLoading,    setPwLoading]    = useState(false);
+
+  useFocusEffect(useCallback(() => { if (user) fetchStats(); }, [user]));
+
+  async function fetchStats() {
+    try {
+      // Count groups
+      const { count: gc } = await supabase
+        .from(TABLES.GROUP_MEMBERS)
+        .select('*', { count: 'exact', head: true })
+        .eq('user_id', user.id);
+      setGroupCount(gc || 0);
+
+      // Count expenses the user paid for
+      const { count: ec } = await supabase
+        .from(TABLES.EXPENSES)
+        .select('*', { count: 'exact', head: true })
+        .eq('paid_by', user.id);
+      setExpenseCount(ec || 0);
+
+      // Count settled splits
+      const { count: sc } = await supabase
+        .from(TABLES.EXPENSE_SPLITS)
+        .select('*', { count: 'exact', head: true })
+        .eq('user_id', user.id)
+        .eq('is_settled', true);
+      setSettledCount(sc || 0);
+    } catch (e) {
+      console.error('fetchStats error:', e);
+    }
+  }
 
   async function handleSave() {
     if (!fullName.trim()) return;
@@ -24,6 +68,50 @@ export default function SettingsScreen({ navigation }) {
       Alert.alert('Error', e.message);
     } finally {
       setSaving(false);
+    }
+  }
+
+  async function handleChangePassword() {
+    if (!currentPw || !newPw || !confirmPw) {
+      Alert.alert('Missing Fields', 'Please fill in all password fields.');
+      return;
+    }
+    if (newPw.length < 6) {
+      Alert.alert('Too Short', 'New password must be at least 6 characters.');
+      return;
+    }
+    if (newPw !== confirmPw) {
+      Alert.alert('Mismatch', 'New passwords do not match.');
+      return;
+    }
+    setPwLoading(true);
+    try {
+      // Verify current password by re-authenticating
+      const { error: signInError } = await supabase.auth.signInWithPassword({
+        email: user.email,
+        password: currentPw,
+      });
+      if (signInError) {
+        Alert.alert('Wrong Password', 'Your current password is incorrect.');
+        setPwLoading(false);
+        return;
+      }
+
+      // Update to new password
+      const { error: updateError } = await supabase.auth.updateUser({
+        password: newPw,
+      });
+      if (updateError) throw updateError;
+
+      Alert.alert('Success', 'Password changed successfully!');
+      setShowPwModal(false);
+      setCurrentPw('');
+      setNewPw('');
+      setConfirmPw('');
+    } catch (e) {
+      Alert.alert('Error', e.message);
+    } finally {
+      setPwLoading(false);
     }
   }
 
@@ -78,7 +166,7 @@ export default function SettingsScreen({ navigation }) {
           <SettingRow
             icon={<Lock size={18} color={COLORS.lavender} strokeWidth={1.8} />}
             label="Change Password"
-            onPress={() => Alert.alert('Info', 'Password reset email will be sent to your inbox.')}
+            onPress={() => setShowPwModal(true)}
           />
         </View>
 
@@ -99,21 +187,14 @@ export default function SettingsScreen({ navigation }) {
               thumbColor="#fff"
             />
           </View>
-          <View style={styles.divider} />
-          <SettingRow
-            icon={<ChevronsUpDown size={18} color={COLORS.lavender} strokeWidth={1.8} />}
-            label="Currency"
-            value="Philippine Peso (P)"
-            onPress={() => Alert.alert('Coming Soon', 'Currency selection coming soon!')}
-          />
         </View>
 
         {/* Stats */}
         <Text style={styles.sectionLabel}>YOUR STATS</Text>
         <View style={styles.statsRow}>
-          <StatCard icon={<Users size={22} color={COLORS.babyPink} strokeWidth={1.8} />}       label="Groups"   value="—" />
-          <StatCard icon={<Receipt size={22} color={COLORS.babyPink} strokeWidth={1.8} />}     label="Expenses" value="—" />
-          <StatCard icon={<CheckCircle size={22} color={COLORS.babyPink} strokeWidth={1.8} />} label="Settled"  value="—" />
+          <StatCard icon={<Users size={22} color={COLORS.babyPink} strokeWidth={1.8} />}       label="Groups"   value={String(groupCount)} />
+          <StatCard icon={<Receipt size={22} color={COLORS.babyPink} strokeWidth={1.8} />}     label="Expenses" value={String(expenseCount)} />
+          <StatCard icon={<CheckCircle size={22} color={COLORS.babyPink} strokeWidth={1.8} />} label="Settled"  value={String(settledCount)} />
         </View>
 
         {/* Sign Out */}
@@ -126,6 +207,54 @@ export default function SettingsScreen({ navigation }) {
 
         <View style={{ height: SPACING[10] }} />
       </ScrollView>
+
+      {/* Password Change Modal */}
+      <Modal visible={showPwModal} transparent animationType="slide">
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalCard}>
+            <LinearGradient colors={['#2a1040', '#1c0a32']} style={styles.modalGrad}>
+              <View style={styles.modalHeader}>
+                <Text style={styles.modalTitle}>Change Password</Text>
+                <TouchableOpacity onPress={() => { setShowPwModal(false); setCurrentPw(''); setNewPw(''); setConfirmPw(''); }}>
+                  <X size={22} color={COLORS.lavender} strokeWidth={2} />
+                </TouchableOpacity>
+              </View>
+
+              <StyledInput
+                label="Current Password"
+                value={currentPw}
+                onChangeText={setCurrentPw}
+                placeholder="Enter current password"
+                secureTextEntry
+              />
+              <StyledInput
+                label="New Password"
+                value={newPw}
+                onChangeText={setNewPw}
+                placeholder="Min. 6 characters"
+                secureTextEntry
+              />
+              <StyledInput
+                label="Confirm New Password"
+                value={confirmPw}
+                onChangeText={setConfirmPw}
+                placeholder="Repeat new password"
+                secureTextEntry
+              />
+
+              <TouchableOpacity
+                onPress={handleChangePassword}
+                disabled={pwLoading}
+                style={styles.modalBtn}
+              >
+                <LinearGradient colors={['#9b59d0', '#ffadd0']} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={styles.modalBtnGrad}>
+                  <Text style={styles.modalBtnText}>{pwLoading ? 'Changing...' : 'Update Password'}</Text>
+                </LinearGradient>
+              </TouchableOpacity>
+            </LinearGradient>
+          </View>
+        </View>
+      </Modal>
     </LinearGradient>
   );
 }
@@ -187,4 +316,14 @@ const styles = StyleSheet.create({
   signOutBtn:   { margin: SPACING[5], marginTop: SPACING[6], borderRadius: RADIUS.xl, overflow: 'hidden' },
   signOutGrad:  { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: SPACING[3], padding: SPACING[4], borderWidth: 1, borderColor: 'rgba(239,68,68,0.3)', borderRadius: RADIUS.xl },
   signOutText:  { color: '#ef4444', fontSize: FONTS.sizes.base, fontWeight: '700' },
+
+  // Password Modal
+  modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.7)', justifyContent: 'center', padding: SPACING[5] },
+  modalCard:    { borderRadius: RADIUS['2xl'], overflow: 'hidden' },
+  modalGrad:    { padding: SPACING[6], borderWidth: 1, borderColor: 'rgba(255,173,208,0.15)', borderRadius: RADIUS['2xl'] },
+  modalHeader:  { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: SPACING[5] },
+  modalTitle:   { color: COLORS.white, fontSize: FONTS.sizes.xl, fontWeight: '800' },
+  modalBtn:     { borderRadius: RADIUS.lg, overflow: 'hidden', marginTop: SPACING[3] },
+  modalBtnGrad: { paddingVertical: SPACING[3], paddingHorizontal: SPACING[5], alignItems: 'center' },
+  modalBtnText: { color: '#fff', fontSize: FONTS.sizes.base, fontWeight: '700' },
 });

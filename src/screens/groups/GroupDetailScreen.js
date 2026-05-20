@@ -42,12 +42,23 @@ export default function GroupDetailScreen({ route, navigation }) {
   }
 
   async function fetchExpenses() {
-    const { data } = await supabase
+    const { data, error } = await supabase
       .from(TABLES.EXPENSES)
-      .select('*, splits:expense_splits(*), payer:users!paid_by(full_name)')
+      .select('*, splits:expense_splits(*)')
       .eq('group_id', groupId)
       .order('date', { ascending: false });
-    setExpenses((data || []).map(e => ({ ...e, payer_name: e.payer?.full_name })));
+      
+    if (error) {
+      console.error('fetchExpenses error:', error.message);
+      Alert.alert('Error loading expenses', error.message);
+    }
+    
+    // Manual fetch for users
+    const payerIds = [...new Set((data || []).map(e => e.paid_by))];
+    const { data: usersData } = await supabase.from(TABLES.USERS).select('id, full_name').in('id', payerIds);
+    const usersMap = Object.fromEntries((usersData || []).map(u => [u.id, u.full_name]));
+
+    setExpenses((data || []).map(e => ({ ...e, payer_name: usersMap[e.paid_by] })));
   }
 
   async function handleDeleteGroup() {
@@ -73,8 +84,14 @@ export default function GroupDetailScreen({ route, navigation }) {
   const myBalance = (() => {
     let b = 0;
     for (const exp of expenses) {
-      if (exp.paid_by === user.id) b += exp.splits?.filter(s => s.user_id !== user.id).reduce((a, s) => a + s.amount, 0) || 0;
-      else b -= exp.splits?.find(s => s.user_id === user.id)?.amount || 0;
+      if (exp.paid_by === user.id) {
+        b += exp.splits?.filter(s => s.user_id !== user.id && !s.is_settled).reduce((a, s) => a + s.amount, 0) || 0;
+      } else {
+        const mySplit = exp.splits?.find(s => s.user_id === user.id);
+        if (mySplit && !mySplit.is_settled) {
+          b -= mySplit.amount;
+        }
+      }
     }
     return b;
   })();
@@ -110,7 +127,7 @@ export default function GroupDetailScreen({ route, navigation }) {
         >
           <View style={styles.balanceShimmer} />
           <Text style={styles.balanceLabel}>Your Balance</Text>
-          <Text style={styles.balanceAmount}>{myBalance >= 0 ? '+' : ''}{formatCurrency(myBalance)}</Text>
+          <Text style={styles.balanceAmount}>{myBalance >= 0 ? '+' : ''}{formatCurrency(myBalance, group?.currency || 'PHP')}</Text>
           <Text style={styles.balanceSub}>{myBalance >= 0 ? 'You are owed money' : 'You owe money'}</Text>
         </LinearGradient>
 
@@ -122,13 +139,17 @@ export default function GroupDetailScreen({ route, navigation }) {
             actionLabel="Manage"
           />
           <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.membersRow}>
-            {members.map(m => (
-              <View key={m.id} style={styles.memberChip}>
-                <Avatar name={m.user?.full_name || m.user?.email || ''} size={44} />
-                <Text style={styles.memberName} numberOfLines={1}>{m.user?.full_name?.split(' ')[0] || 'User'}</Text>
-                {m.role === 'admin' && <Text style={styles.adminBadge}>admin</Text>}
-              </View>
-            ))}
+            {members.map(m => {
+              const displayName = m.user?.full_name || m.display_name || 'Guest';
+              const nameToShow = displayName.split(' ')[0];
+              return (
+                <View key={m.id} style={styles.memberChip}>
+                  <Avatar name={displayName} size={44} />
+                  <Text style={styles.memberName} numberOfLines={1}>{nameToShow}</Text>
+                  {m.role === 'admin' && <Text style={styles.adminBadge}>admin</Text>}
+                </View>
+              );
+            })}
           </ScrollView>
         </View>
 
@@ -149,7 +170,7 @@ export default function GroupDetailScreen({ route, navigation }) {
             </GlassCard>
           ) : (
             expenses.map(e => (
-              <ExpenseCard key={e.id} expense={e} currentUserId={user.id}
+              <ExpenseCard key={e.id} expense={e} currentUserId={user.id} currency={group?.currency || 'PHP'}
                 onPress={() => navigation.navigate('ExpenseDetail', { expenseId: e.id })} />
             ))
           )}

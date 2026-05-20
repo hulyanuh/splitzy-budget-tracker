@@ -1,8 +1,9 @@
 import React, { useState } from 'react';
-import { View, Text, StyleSheet, ScrollView, TouchableOpacity, KeyboardAvoidingView, Platform, Alert } from 'react-native';
+import { View, Text, StyleSheet, ScrollView, TouchableOpacity, KeyboardAvoidingView, Platform, Alert, Image } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
-import { Mail, Lock, LogIn, SplitSquareHorizontal } from 'lucide-react-native';
+import { Mail, Lock, LogIn } from 'lucide-react-native';
 import { useAuth } from '../../context/AuthContext';
+import { supabase } from '../../config/supabase';
 import { COLORS, FONTS, SPACING, RADIUS, SHADOWS } from '../../config/theme';
 import { StyledInput, GradientButton } from '../../components/UIComponents';
 
@@ -40,10 +41,7 @@ export default function LoginScreen({ navigation }) {
 
           {/* Logo */}
           <View style={styles.logoWrap}>
-            <LinearGradient colors={['#9b59d0', '#ffadd0']} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={styles.logoCircle}>
-              <SplitSquareHorizontal size={40} color="#fff" strokeWidth={1.8} />
-            </LinearGradient>
-            <Text style={styles.logoText}>Splitzy</Text>
+            <Image source={require('../../../assets/logo_dark.png')} style={styles.logoImage} resizeMode="contain" />
             <Text style={styles.logoSub}>Split smart. Pay easy.</Text>
           </View>
 
@@ -79,6 +77,18 @@ export default function LoginScreen({ navigation }) {
                 style={{ marginTop: SPACING[2] }}
               />
 
+              <TouchableOpacity 
+                style={styles.forgotRow} 
+                onPress={async () => {
+                  if (!email.trim()) { Alert.alert('Enter Email', 'Please enter your email first.'); return; }
+                  const { error } = await supabase.auth.resetPasswordForEmail(email.trim());
+                  if (error) Alert.alert('Error', error.message);
+                  else Alert.alert('Email Sent', 'Check your inbox for the password reset link.');
+                }}
+              >
+                <Text style={styles.forgotText}>Forgot Password?</Text>
+              </TouchableOpacity>
+
               <TouchableOpacity style={styles.switchRow} onPress={() => navigation.navigate('Signup')}>
                 <Text style={styles.switchText}>Don't have an account? </Text>
                 <Text style={styles.switchLink}>Sign up</Text>
@@ -96,8 +106,7 @@ const styles = StyleSheet.create({
   root:       { flex: 1 },
   scroll:     { flexGrow: 1, justifyContent: 'center', padding: SPACING[6] },
   logoWrap:   { alignItems: 'center', marginBottom: SPACING[8] },
-  logoCircle: { width: 88, height: 88, borderRadius: 44, alignItems: 'center', justifyContent: 'center', marginBottom: SPACING[4] },
-  logoText:   { color: COLORS.white, fontSize: FONTS.sizes['3xl'], fontWeight: '900', letterSpacing: -1 },
+  logoImage:  { width: 160, height: 160, marginBottom: SPACING[2] },
   logoSub:    { color: COLORS.lavender, fontSize: FONTS.sizes.base, marginTop: 4 },
   card:       { borderRadius: RADIUS['2xl'], overflow: 'hidden' },
   cardGrad:   { padding: SPACING[6], borderWidth: 1, borderColor: 'rgba(255,173,208,0.15)', borderRadius: RADIUS['2xl'] },
@@ -106,4 +115,6 @@ const styles = StyleSheet.create({
   switchRow:  { flexDirection: 'row', justifyContent: 'center', marginTop: SPACING[5] },
   switchText: { color: COLORS.lavender, fontSize: FONTS.sizes.sm },
   switchLink: { color: COLORS.babyPink, fontSize: FONTS.sizes.sm, fontWeight: '700' },
+  forgotRow:  { alignSelf: 'flex-end', marginTop: SPACING[2], marginBottom: SPACING[3] },
+  forgotText: { color: COLORS.babyPink, fontSize: FONTS.sizes.sm, fontWeight: '600' },
 });
