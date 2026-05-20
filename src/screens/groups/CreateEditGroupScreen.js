@@ -58,11 +58,31 @@ export default function CreateEditGroupScreen({ route, navigation }) {
       Alert.alert('Already added', 'This person is already in the group.');
       return;
     }
-    const { data, error } = await supabase.from(TABLES.USERS).select('id, full_name, email').eq('email', email).maybeSingle();
-    if (error) { Alert.alert('Error', error.message); return; }
-    if (!data || !data.id) { Alert.alert('Not found', 'No Splitzy account found for that email.'); return; }
-    if (user && data.id === user.id) { Alert.alert('That\'s you!', 'You\'re added automatically.'); return; }
-    setMembers(prev => [...prev, { ...data, is_guest: false }]);
+    const { data, error } = await supabase
+      .from(TABLES.USERS)
+      .select('id, full_name, email')
+      .eq('email', email)
+      .maybeSingle();
+
+    if (error) {
+      // RLS or network error
+      Alert.alert('Lookup Error', `Could not search for user.\n\nDetails: ${error.message}\n\nMake sure the RLS policy allows user lookups in your Supabase dashboard.`);
+      return;
+    }
+    if (!data || !data.id) {
+      Alert.alert(
+        'Not found',
+        `No Splitzy account found for:\n${email}\n\nDouble-check the email address, or add them as a Guest instead.`
+      );
+      return;
+    }
+    if (user && data.id === user.id) {
+      Alert.alert("That's you!", "You're added automatically as the Creator.");
+      return;
+    }
+    // Use email prefix as fallback if full_name is null
+    const displayName = data.full_name || email.split('@')[0];
+    setMembers(prev => [...prev, { ...data, full_name: displayName, is_guest: false }]);
     setMemberEmail('');
   }
 

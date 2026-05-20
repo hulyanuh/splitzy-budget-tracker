@@ -6,6 +6,7 @@ import { SafeAreaProvider } from 'react-native-safe-area-context';
 
 import { AuthProvider } from './src/context/AuthContext';
 import AppNavigator    from './src/navigation/AppNavigator';
+import { AppAlertProvider } from './src/components/UIComponents';
 
 // Keep splash screen visible while we bootstrap
 try {
@@ -28,7 +29,9 @@ export default function App() {
     <SafeAreaProvider>
       <AuthProvider>
         <StatusBar style="light" backgroundColor="transparent" translucent />
-        <AppNavigator />
+        <AppAlertProvider>
+          <AppNavigator />
+        </AppAlertProvider>
       </AuthProvider>
     </SafeAreaProvider>
   );

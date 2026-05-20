@@ -1,17 +1,18 @@
 import React, { useState, useEffect } from 'react';
-import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Alert, KeyboardAvoidingView, Platform } from 'react-native';
+import { View, Text, StyleSheet, ScrollView, TouchableOpacity, KeyboardAvoidingView, Platform } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
-import { ArrowLeft, ArrowRight, Check, Receipt, SplitSquareHorizontal, CalendarDays } from 'lucide-react-native';
+import { ArrowLeft, ArrowRight, Check, Receipt, SplitSquareHorizontal, Plus, Trash2 } from 'lucide-react-native';
 import { useAuth } from '../../context/AuthContext';
 import { supabase, TABLES, CATEGORIES, SPLIT_TYPES } from '../../config/supabase';
 import { COLORS, FONTS, SPACING, RADIUS, SHADOWS } from '../../config/theme';
-import { StyledInput, GradientButton, GlassCard, Avatar } from '../../components/UIComponents';
+import { StyledInput, GradientButton, GlassCard, Avatar, useAppAlert } from '../../components/UIComponents';
 import { calculateEqualSplit, validateCustomSplit } from '../../utils/splitCalculator';
 
 export default function AddExpenseScreen({ route, navigation }) {
   const { groupId, groupName, expenseId } = route.params || {};
   const isEdit = !!expenseId;
   const { user } = useAuth();
+  const { showAlert } = useAppAlert();
 
   const [step,      setStep]     = useState(1);
   const [title,     setTitle]    = useState('');
@@ -19,7 +20,10 @@ export default function AddExpenseScreen({ route, navigation }) {
   const [category,  setCategory] = useState(CATEGORIES[0].id);
   const [date,      setDate]     = useState(new Date().toISOString().split('T')[0]);
   const [notes,     setNotes]    = useState('');
-  const [paidBy,    setPaidBy]   = useState(user.id);
+  
+  // Payers array: [{ memberId, amount }]
+  const [payers,    setPayers]   = useState([{ memberId: user.id, amount: '' }]);
+  
   const [splitType, setSplitType]= useState(SPLIT_TYPES.EQUAL);
   const [members,   setMembers]  = useState([]);
   const [splits,    setSplits]   = useState({});
@@ -27,12 +31,27 @@ export default function AddExpenseScreen({ route, navigation }) {
 
   useEffect(() => { loadMembers(); }, []);
 
+  // When expense amount changes, if there is only one payer, auto-fill their amount
+  useEffect(() => {
+    if (payers.length === 1 && amount) {
+      setPayers([{ ...payers[0], amount }]);
+    }
+  }, [amount]);
+
   async function loadMembers() {
     const { data } = await supabase
       .from(TABLES.GROUP_MEMBERS)
       .select('*, user:users(id, full_name, email)')
       .eq('group_id', groupId);
-    setMembers((data || []).map(m => ({ id: m.user?.id, full_name: m.user?.full_name, email: m.user?.email })));
+      
+    const loadedMembers = (data || []).map(m => {
+      if (m.user_id && m.user) {
+        return { id: m.user.id, full_name: m.user.full_name || m.user.email?.split('@')[0] || 'User', email: m.user.email, is_guest: false, member_row_id: m.id };
+      } else {
+        return { id: `guest_${m.id}`, full_name: m.display_name || 'Guest', email: 'Guest (No Account)', is_guest: true, member_row_id: m.id };
+      }
+    });
+    setMembers(loadedMembers);
   }
 
   function getEqualSplits() {
@@ -45,30 +64,104 @@ export default function AddExpenseScreen({ route, navigation }) {
       : Object.fromEntries(Object.entries(splits).map(([k, v]) => [k, parseFloat(v) || 0]));
   }
 
+  const addPayer = (memberId) => {
+    if (payers.find(p => p.memberId === memberId)) {
+      showAlert('Already Added', 'This person is already in the payer list.');
+      return;
+    }
+    setPayers(prev => [...prev, { memberId, amount: '' }]);
+  };
+
+  const removePayer = (memberId) => {
+    if (payers.length === 1) {
+      showAlert('Required', 'There must be at least one payer.');
+      return;
+    }
+    setPayers(prev => prev.filter(p => p.memberId !== memberId));
+  };
+
+  const updatePayerAmount = (memberId, amt) => {
+    setPayers(prev => prev.map(p => p.memberId === memberId ? { ...p, amount: amt } : p));
+  };
+
   async function handleSubmit() {
     const amt = parseFloat(amount);
-    if (!title.trim() || !amt) { Alert.alert('Missing Info', 'Please fill in title and amount.'); return; }
-    if (splitType === SPLIT_TYPES.CUSTOM && !validateCustomSplit(amt, splits)) {
-      Alert.alert('Invalid Split', 'Custom splits must add up to the total amount.'); return;
+    if (!title.trim() || !amt) { 
+      showAlert('Missing Info', 'Please fill in title and amount.'); 
+      return; 
     }
+
+    // Validate Payers
+    const totalPaid = payers.reduce((sum, p) => sum + (parseFloat(p.amount) || 0), 0);
+    if (Math.abs(totalPaid - amt) > 0.01) {
+      showAlert('Invalid Payers', `The amounts paid by members must equal the total expense amount (P${amt.toFixed(2)}). Currently it is P${totalPaid.toFixed(2)}.`);
+      return;
+    }
+
+    // Validate Splits
+    if (splitType === SPLIT_TYPES.CUSTOM && !validateCustomSplit(amt, splits)) {
+      showAlert('Invalid Split', 'Custom splits must add up to the total amount.'); 
+      return;
+    }
+
     setLoading(true);
     try {
       const splitData = getSplitData();
+      
+      // Determine the primary payer for backward compatibility
+      const primaryPayer = payers.sort((a,b) => parseFloat(b.amount) - parseFloat(a.amount))[0];
+      const primaryPayerMember = members.find(m => m.id === primaryPayer.memberId);
+      const paidBy = (primaryPayerMember && !primaryPayerMember.is_guest) ? primaryPayerMember.id : null;
+
       const expenseData = { group_id: groupId, title: title.trim(), amount: amt, category, date, notes: notes.trim(), paid_by: paidBy, split_type: splitType };
       let expId = expenseId;
+      
       if (isEdit) {
         await supabase.from(TABLES.EXPENSES).update(expenseData).eq('id', expId);
         await supabase.from(TABLES.EXPENSE_SPLITS).delete().eq('expense_id', expId);
+        await supabase.from('expense_payments').delete().eq('expense_id', expId);
       } else {
         const { data } = await supabase.from(TABLES.EXPENSES).insert(expenseData).select().single();
         expId = data.id;
       }
-      await supabase.from(TABLES.EXPENSE_SPLITS).insert(
-        Object.entries(splitData).map(([uid, amt]) => ({ expense_id: expId, user_id: uid, amount: amt }))
-      );
-      navigation.goBack();
-    } catch (e) { Alert.alert('Error', e.message); }
-    finally { setLoading(false); }
+
+      // Build expense_payments
+      const paymentRows = payers.map(p => {
+        const member = members.find(m => m.id === p.memberId);
+        return {
+          expense_id: expId,
+          user_id: member.is_guest ? null : member.id,
+          guest_member_id: member.is_guest ? member.member_row_id : null,
+          amount: parseFloat(p.amount)
+        };
+      });
+      await supabase.from('expense_payments').insert(paymentRows);
+
+      // Build expense_splits
+      const splitRows = Object.entries(splitData).map(([uid, splitAmt]) => {
+        const member = members.find(m => m.id === uid);
+        if (!member) return null;
+
+        return { 
+          expense_id: expId, 
+          user_id: member.is_guest ? null : uid, 
+          guest_member_id: member.is_guest ? member.member_row_id : null, 
+          amount: splitAmt,
+          amount_paid: 0,
+          is_settled: false
+        };
+      }).filter(Boolean);
+
+      await supabase.from(TABLES.EXPENSE_SPLITS).insert(splitRows);
+      
+      showAlert('Success', 'Expense saved successfully!', [
+        { text: 'OK', onPress: () => navigation.goBack() }
+      ]);
+    } catch (e) { 
+      showAlert('Error', e.message); 
+    } finally { 
+      setLoading(false); 
+    }
   }
 
   const steps = [
@@ -128,52 +221,89 @@ export default function AddExpenseScreen({ route, navigation }) {
 
           {/* Step 2: Split */}
           {step === 2 && (
-            <GlassCard style={styles.card}>
-              <Text style={styles.fieldLabel}>PAID BY</Text>
-              <View style={styles.membersGrid}>
-                {members.map(m => (
-                  <TouchableOpacity key={m.id} onPress={() => setPaidBy(m.id)}
-                    style={[styles.memberChip, paidBy === m.id && styles.memberChipActive]}>
-                    <Avatar name={m.full_name || ''} size={36} />
-                    <Text style={styles.memberChipName} numberOfLines={1}>{m.full_name?.split(' ')[0] || 'User'}</Text>
-                    {paidBy === m.id && <View style={styles.memberCheck}><Check size={10} color="#fff" strokeWidth={3} /></View>}
-                  </TouchableOpacity>
-                ))}
-              </View>
+            <View style={{ gap: SPACING[4] }}>
+              {/* WHO PAID */}
+              <GlassCard style={styles.card}>
+                <Text style={styles.fieldLabel}>WHO PAID?</Text>
+                
+                {payers.map((payer, idx) => {
+                  const member = members.find(m => m.id === payer.memberId);
+                  return (
+                    <View key={idx} style={styles.payerRow}>
+                      <Avatar name={member?.full_name || ''} size={36} />
+                      
+                      <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ flex: 1, marginHorizontal: SPACING[2] }}>
+                        {members.map(m => (
+                          <TouchableOpacity key={m.id} onPress={() => {
+                            setPayers(prev => prev.map((p, i) => i === idx ? { ...p, memberId: m.id } : p));
+                          }}
+                            style={[styles.memberChipSmall, payer.memberId === m.id && styles.memberChipSmallActive]}>
+                            <Text style={[styles.memberChipSmallText, payer.memberId === m.id && { color: COLORS.white }]}>
+                              {m.full_name?.split(' ')[0]}
+                            </Text>
+                          </TouchableOpacity>
+                        ))}
+                      </ScrollView>
 
-              <Text style={[styles.fieldLabel, { marginTop: SPACING[4] }]}>SPLIT METHOD</Text>
-              <View style={styles.splitTypeRow}>
-                {[SPLIT_TYPES.EQUAL, SPLIT_TYPES.CUSTOM].map(t => (
-                  <TouchableOpacity key={t} onPress={() => setSplitType(t)}
-                    style={[styles.splitTypeBtn, splitType === t && styles.splitTypeBtnActive]}>
-                    <SplitSquareHorizontal size={14} color={splitType === t ? COLORS.babyPink : COLORS.lavender} strokeWidth={2} />
-                    <Text style={[styles.splitTypeText, splitType === t && { color: COLORS.babyPink }]}>{t.charAt(0).toUpperCase() + t.slice(1)}</Text>
-                  </TouchableOpacity>
-                ))}
-              </View>
+                      <View style={styles.payerInputContainer}>
+                        <StyledInput
+                          value={payer.amount}
+                          onChangeText={v => updatePayerAmount(payer.memberId, v)}
+                          placeholder="0.00"
+                          keyboardType="decimal-pad"
+                          containerStyle={{ marginBottom: 0, width: 80 }}
+                          inputStyle={{ paddingVertical: 8, textAlign: 'right' }}
+                        />
+                        <TouchableOpacity onPress={() => removePayer(payer.memberId)} style={styles.removePayerBtn}>
+                          <Trash2 size={16} color={COLORS.lavender} />
+                        </TouchableOpacity>
+                      </View>
+                    </View>
+                  );
+                })}
+                
+                <TouchableOpacity onPress={() => addPayer(members[0].id)} style={styles.addPayerBtn}>
+                  <Plus size={16} color={COLORS.babyPink} />
+                  <Text style={styles.addPayerText}>Add Payer</Text>
+                </TouchableOpacity>
+              </GlassCard>
 
-              {splitType === SPLIT_TYPES.CUSTOM && members.map(m => (
-                <View key={m.id} style={styles.customSplitRow}>
-                  <Avatar name={m.full_name || ''} size={32} />
-                  <Text style={styles.customSplitName}>{m.full_name?.split(' ')[0] || 'User'}</Text>
-                  <StyledInput
-                    value={splits[m.id] || ''}
-                    onChangeText={v => setSplits(prev => ({ ...prev, [m.id]: v }))}
-                    placeholder="0.00"
-                    keyboardType="decimal-pad"
-                    containerStyle={{ flex: 1, marginBottom: 0 }}
-                  />
+              {/* SPLIT METHOD */}
+              <GlassCard style={styles.card}>
+                <Text style={styles.fieldLabel}>HOW TO SPLIT</Text>
+                <View style={styles.splitTypeRow}>
+                  {[SPLIT_TYPES.EQUAL, SPLIT_TYPES.CUSTOM].map(t => (
+                    <TouchableOpacity key={t} onPress={() => setSplitType(t)}
+                      style={[styles.splitTypeBtn, splitType === t && styles.splitTypeBtnActive]}>
+                      <SplitSquareHorizontal size={14} color={splitType === t ? COLORS.babyPink : COLORS.lavender} strokeWidth={2} />
+                      <Text style={[styles.splitTypeText, splitType === t && { color: COLORS.babyPink }]}>{t.charAt(0).toUpperCase() + t.slice(1)}</Text>
+                    </TouchableOpacity>
+                  ))}
                 </View>
-              ))}
 
-              {splitType === SPLIT_TYPES.EQUAL && (
-                <View style={styles.equalPreview}>
-                  <Text style={styles.equalPreviewText}>
-                    Each person pays: {'\n'}P{((parseFloat(amount) || 0) / (members.length || 1)).toFixed(2)}
-                  </Text>
-                </View>
-              )}
-            </GlassCard>
+                {splitType === SPLIT_TYPES.CUSTOM && members.map(m => (
+                  <View key={m.id} style={styles.customSplitRow}>
+                    <Avatar name={m.full_name || ''} size={32} />
+                    <Text style={styles.customSplitName}>{m.full_name?.split(' ')[0] || 'User'}</Text>
+                    <StyledInput
+                      value={splits[m.id] || ''}
+                      onChangeText={v => setSplits(prev => ({ ...prev, [m.id]: v }))}
+                      placeholder="0.00"
+                      keyboardType="decimal-pad"
+                      containerStyle={{ flex: 1, marginBottom: 0 }}
+                    />
+                  </View>
+                ))}
+
+                {splitType === SPLIT_TYPES.EQUAL && (
+                  <View style={styles.equalPreview}>
+                    <Text style={styles.equalPreviewText}>
+                      Each person's share: {'\n'}P{((parseFloat(amount) || 0) / (members.length || 1)).toFixed(2)}
+                    </Text>
+                  </View>
+                )}
+              </GlassCard>
+            </View>
           )}
 
           {/* Step 3: Confirm */}
@@ -185,22 +315,29 @@ export default function AddExpenseScreen({ route, navigation }) {
                 <Text style={styles.confirmLabel}>Category</Text>
                 <Text style={styles.confirmValue}>{CATEGORIES.find(c => c.id === category)?.label}</Text>
               </View>
-              <View style={styles.confirmRow}>
-                <Text style={styles.confirmLabel}>Paid by</Text>
-                <Text style={styles.confirmValue}>{members.find(m => m.id === paidBy)?.full_name || 'You'}</Text>
-              </View>
-              <View style={styles.confirmRow}>
-                <Text style={styles.confirmLabel}>Split type</Text>
-                <Text style={styles.confirmValue}>{splitType}</Text>
-              </View>
+              
+              <Text style={[styles.fieldLabel, { marginTop: SPACING[4] }]}>PAYERS</Text>
+              {payers.map(p => {
+                const member = members.find(m => m.id === p.memberId);
+                return (
+                  <View key={p.memberId} style={styles.splitPreviewRow}>
+                    <Avatar name={member?.full_name || ''} size={24} />
+                    <Text style={styles.splitPreviewName}>{member?.full_name?.split(' ')[0]}</Text>
+                    <Text style={[styles.splitPreviewAmt, { color: COLORS.status.success }]}>+P{Number(p.amount).toFixed(2)}</Text>
+                  </View>
+                );
+              })}
+
               <Text style={[styles.fieldLabel, { marginTop: SPACING[4] }]}>SPLITS</Text>
               {Object.entries(getSplitData()).map(([uid, amt]) => {
                 const member = members.find(m => m.id === uid);
                 return (
                   <View key={uid} style={styles.splitPreviewRow}>
-                    <Avatar name={member?.full_name || ''} size={28} />
-                    <Text style={styles.splitPreviewName}>{member?.full_name?.split(' ')[0] || 'User'}</Text>
-                    <Text style={styles.splitPreviewAmt}>P{Number(amt).toFixed(2)}</Text>
+                    <Avatar name={member?.full_name || ''} size={24} />
+                    <Text style={styles.splitPreviewName}>{member?.full_name?.split(' ')[0]}</Text>
+                    <View style={{ alignItems: 'flex-end' }}>
+                      <Text style={styles.splitPreviewAmt}>-P{Number(amt).toFixed(2)}</Text>
+                    </View>
                   </View>
                 );
               })}
@@ -213,7 +350,17 @@ export default function AddExpenseScreen({ route, navigation }) {
               <GradientButton
                 title="Continue"
                 onPress={() => {
-                  if (step === 1 && (!title.trim() || !amount)) { Alert.alert('Missing Info', 'Please fill in title and amount.'); return; }
+                  if (step === 1 && (!title.trim() || !amount)) { showAlert('Missing Info', 'Please fill in title and amount.'); return; }
+                  
+                  if (step === 2) {
+                     const amt = parseFloat(amount);
+                     const totalPaid = payers.reduce((sum, p) => sum + (parseFloat(p.amount) || 0), 0);
+                     if (Math.abs(totalPaid - amt) > 0.01) {
+                       showAlert('Invalid Payers', `The amounts paid by members must equal the total expense amount (P${amt.toFixed(2)}). Currently it is P${totalPaid.toFixed(2)}.`);
+                       return;
+                     }
+                  }
+
                   setStep(s => s + 1);
                 }}
                 icon={<ArrowRight size={18} color="#fff" strokeWidth={2} />}
@@ -252,11 +399,6 @@ const styles = StyleSheet.create({
   catChipActive:      { backgroundColor: 'rgba(255,173,208,0.1)' },
   catDot:             { width: 8, height: 8, borderRadius: 4 },
   catLabel:           { color: COLORS.lavender, fontSize: FONTS.sizes.xs, fontWeight: '600' },
-  membersGrid:        { flexDirection: 'row', flexWrap: 'wrap', gap: SPACING[3] },
-  memberChip:         { alignItems: 'center', width: 64, position: 'relative', padding: SPACING[2], borderRadius: RADIUS.lg, borderWidth: 1.5, borderColor: 'transparent' },
-  memberChipActive:   { borderColor: COLORS.babyPink, backgroundColor: 'rgba(255,173,208,0.1)' },
-  memberChipName:     { color: COLORS.white, fontSize: FONTS.sizes.xs, marginTop: 4, fontWeight: '600', textAlign: 'center' },
-  memberCheck:        { position: 'absolute', top: 0, right: 0, width: 16, height: 16, borderRadius: 8, backgroundColor: COLORS.babyPink, alignItems: 'center', justifyContent: 'center' },
   splitTypeRow:       { flexDirection: 'row', gap: SPACING[3] },
   splitTypeBtn:       { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, padding: SPACING[3], borderRadius: RADIUS.lg, borderWidth: 1.5, borderColor: 'rgba(255,173,208,0.2)' },
   splitTypeBtnActive: { borderColor: COLORS.babyPink, backgroundColor: 'rgba(255,173,208,0.1)' },
@@ -273,5 +415,16 @@ const styles = StyleSheet.create({
   splitPreviewRow:    { flexDirection: 'row', alignItems: 'center', gap: SPACING[3], paddingVertical: SPACING[2] },
   splitPreviewName:   { flex: 1, color: COLORS.white, fontSize: FONTS.sizes.sm, fontWeight: '600' },
   splitPreviewAmt:    { color: COLORS.babyPink, fontSize: FONTS.sizes.sm, fontWeight: '700' },
+  splitPreviewPartial:{ color: COLORS.lavender, fontSize: FONTS.sizes.xs, marginTop: 2 },
   btnRow:             { marginTop: SPACING[2] },
+
+  // Payer Row Styles
+  payerRow: { flexDirection: 'row', alignItems: 'center', gap: SPACING[2], paddingVertical: SPACING[2], borderBottomWidth: 1, borderBottomColor: 'rgba(255,173,208,0.1)' },
+  payerInputContainer: { flexDirection: 'row', alignItems: 'center', gap: SPACING[2] },
+  removePayerBtn: { padding: 8 },
+  addPayerBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, paddingVertical: SPACING[3], borderRadius: RADIUS.md, backgroundColor: 'rgba(255,173,208,0.05)', borderWidth: 1, borderColor: 'rgba(255,173,208,0.15)' },
+  addPayerText: { color: COLORS.babyPink, fontSize: FONTS.sizes.sm, fontWeight: '600' },
+  memberChipSmall: { paddingHorizontal: 12, paddingVertical: 6, borderRadius: RADIUS.full, backgroundColor: 'rgba(255,173,208,0.05)', marginRight: 8, borderWidth: 1, borderColor: 'transparent' },
+  memberChipSmallActive: { backgroundColor: 'rgba(255,173,208,0.2)', borderColor: COLORS.babyPink },
+  memberChipSmallText: { color: COLORS.lavender, fontSize: FONTS.sizes.xs, fontWeight: '600' },
 });

@@ -1,32 +1,38 @@
 import React, { useState, useEffect } from 'react';
-import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Alert } from 'react-native';
+import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Modal } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { ArrowLeft, Pencil, Trash2, CreditCard, CalendarDays, StickyNote, SplitSquareHorizontal, CheckCircle } from 'lucide-react-native';
 import { useAuth } from '../../context/AuthContext';
 import { supabase, TABLES, CATEGORIES } from '../../config/supabase';
 import { COLORS, FONTS, SPACING, RADIUS, SHADOWS } from '../../config/theme';
-import { LoadingScreen, GlassCard, Avatar } from '../../components/UIComponents';
+import { LoadingScreen, GlassCard, Avatar, StyledInput, GradientButton, OutlineButton, useAppAlert } from '../../components/UIComponents';
 import { formatCurrency } from '../../utils/splitCalculator';
 
 export default function ExpenseDetailScreen({ route, navigation }) {
   const { expenseId } = route.params;
   const { user } = useAuth();
+  const { showAlert } = useAppAlert();
+  
   const [expense, setExpense] = useState(null);
   const [loading, setLoading] = useState(true);
+
+  const [recordModalVisible, setRecordModalVisible] = useState(false);
+  const [selectedPayerId, setSelectedPayerId] = useState('');
+  const [amountPaidStr, setAmountPaidStr] = useState('');
+  const [payingForId, setPayingForId] = useState('');
 
   useEffect(() => { fetchExpense(); }, []);
 
   async function fetchExpense() {
     const { data, error } = await supabase
       .from(TABLES.EXPENSES)
-      .select('*, group:groups(name, created_by), splits:expense_splits(*)')
+      .select('*, group:groups(name, created_by, currency), splits:expense_splits(*), payments:expense_payments(*)')
       .eq('id', expenseId)
       .single();
       
     if (error) {
       console.error('fetchExpense error:', error);
-      Alert.alert('Error', 'Failed to load expense details.');
-      navigation.goBack();
+      showAlert('Error', 'Failed to load expense details.', [{ text: 'OK', onPress: () => navigation.goBack() }]);
       return;
     }
       
@@ -40,28 +46,35 @@ export default function ExpenseDetailScreen({ route, navigation }) {
       if (creatorData) {
         data.group.creator_name = creatorData.full_name;
       }
-
-      // Manual fetch for payer
-      const { data: payerData } = await supabase.from(TABLES.USERS).select('full_name, email').eq('id', data.paid_by).single();
-      if (payerData) {
-        data.payer = payerData;
-      }
       
-      // Fetch all group members for unified splits mapping
+      // Fetch all group members for unified mapping
       const { data: gmData } = await supabase
         .from(TABLES.GROUP_MEMBERS)
         .select('*, user:users(id, full_name, email)')
         .eq('group_id', data.group_id);
 
-      if (data.splits && data.splits.length > 0 && gmData) {
-        data.splits = data.splits.map(s => {
-          const member = gmData.find(m => s.user_id ? m.user_id === s.user_id : m.id === s.guest_member_id);
-          return {
-            ...s,
-            displayName: member?.user?.full_name || member?.display_name || 'Guest Member',
-            email: member?.user?.email || 'Guest (No Account)',
-          };
-        });
+      const resolveMember = (userId, guestId) => {
+        const member = gmData?.find(m => userId ? m.user_id === userId : m.id === guestId);
+        return {
+          displayName: member?.user?.full_name || member?.display_name || 'Guest',
+          email: member?.user?.email || 'Guest (No Account)'
+        };
+      };
+
+      if (data.splits) {
+        data.splits = data.splits.map(s => ({ ...s, ...resolveMember(s.user_id, s.guest_member_id) }));
+      }
+      
+      if (data.payments) {
+        data.payments = data.payments.map(p => ({ ...p, ...resolveMember(p.user_id, p.guest_member_id) }));
+      } else {
+        // Fallback if no payments exist yet, use paid_by
+        if (data.paid_by) {
+            const payerMember = resolveMember(data.paid_by, null);
+            data.payments = [{ user_id: data.paid_by, amount: data.amount, ...payerMember }];
+        } else {
+            data.payments = [];
+        }
       }
     }
     
@@ -69,36 +82,104 @@ export default function ExpenseDetailScreen({ route, navigation }) {
     setLoading(false);
   }
 
+  function closeRecordModal() {
+    setRecordModalVisible(false);
+    setSelectedPayerId('');
+    setAmountPaidStr('');
+    setPayingForId('');
+  }
+
+  async function handleAdvancedPayment(mode) {
+    const payerSplit = expense.splits.find(s => s.user_id === selectedPayerId || s.guest_member_id === selectedPayerId);
+    const amountPaid = parseFloat(amountPaidStr) || 0;
+    
+    if (!payerSplit) return;
+    
+    setLoading(true);
+    try {
+      if (mode === 'normal') {
+         // Mark as settled
+         await supabase.from(TABLES.EXPENSE_SPLITS).update({ is_settled: true, amount_paid: payerSplit.amount, settled_at: new Date().toISOString() }).eq('id', payerSplit.id);
+      } else {
+         const otherSplit = expense.splits.find(s => s.user_id === payingForId || s.guest_member_id === payingForId);
+         if (!otherSplit) throw new Error('Other member not found');
+         
+         await supabase.from(TABLES.EXPENSE_SPLITS).update({ is_settled: true, amount_paid: payerSplit.amount, settled_at: new Date().toISOString() }).eq('id', payerSplit.id);
+         await supabase.from(TABLES.EXPENSE_SPLITS).update({ is_settled: true, amount_paid: otherSplit.amount, settled_at: new Date().toISOString() }).eq('id', otherSplit.id);
+         
+         if (mode === 'transfer') {
+            const { data: newExp, error: expErr } = await supabase.from(TABLES.EXPENSES).insert({
+               group_id: expense.group_id,
+               title: `Transfer: ${expense.title}`,
+               amount: otherSplit.amount,
+               category: 'others',
+               paid_by: payerSplit.user_id, // Backward compatibility
+               split_type: 'custom',
+               created_by: user.id
+            }).select().single();
+            
+            if (expErr) throw expErr;
+            
+            // Add payment record for the new expense
+            await supabase.from('expense_payments').insert({
+               expense_id: newExp.id,
+               user_id: payerSplit.user_id,
+               guest_member_id: payerSplit.guest_member_id,
+               amount: otherSplit.amount
+            });
+            
+            // Add split for the person who was paid for
+            await supabase.from(TABLES.EXPENSE_SPLITS).insert({
+               expense_id: newExp.id,
+               user_id: otherSplit.user_id,
+               guest_member_id: otherSplit.guest_member_id,
+               amount: otherSplit.amount,
+               is_settled: false
+            });
+         }
+      }
+      closeRecordModal();
+      await fetchExpense();
+    } catch (e) {
+      showAlert('Error', e.message);
+      setLoading(false);
+    }
+  }
+
   async function toggleSplitSettled(split) {
     const isGroupOwner = expense?.group?.created_by === user.id;
     if (!isGroupOwner) {
-      Alert.alert('Permission Denied', 'Only the group owner is allowed to mark splits as paid.');
+      showAlert('Permission Denied', 'Only the group owner is allowed to mark splits as paid.');
       return;
     }
     const newStatus = !split.is_settled;
     try {
       const { error } = await supabase
         .from(TABLES.EXPENSE_SPLITS)
-        .update({ is_settled: newStatus, settled_at: newStatus ? new Date().toISOString() : null })
+        .update({ 
+            is_settled: newStatus, 
+            amount_paid: newStatus ? split.amount : 0,
+            settled_at: newStatus ? new Date().toISOString() : null 
+        })
         .eq('id', split.id);
       
       if (error) throw error;
       
-      // Update local state
       setExpense(prev => ({
         ...prev,
-        splits: prev.splits.map(s => s.id === split.id ? { ...s, is_settled: newStatus } : s)
+        splits: prev.splits.map(s => s.id === split.id ? { ...s, is_settled: newStatus, amount_paid: newStatus ? split.amount : 0 } : s)
       }));
     } catch (e) {
-      Alert.alert('Error', e.message);
+      showAlert('Error', e.message);
     }
   }
 
   async function handleDelete() {
-    Alert.alert('Delete Expense', 'This will permanently delete this expense.', [
+    showAlert('Delete Expense', 'This will permanently delete this expense.', [
       { text: 'Cancel', style: 'cancel' },
       { text: 'Delete', style: 'destructive', onPress: async () => {
         await supabase.from(TABLES.EXPENSE_SPLITS).delete().eq('expense_id', expenseId);
+        await supabase.from('expense_payments').delete().eq('expense_id', expenseId);
         await supabase.from(TABLES.EXPENSES).delete().eq('id', expenseId);
         navigation.goBack();
       }},
@@ -108,13 +189,17 @@ export default function ExpenseDetailScreen({ route, navigation }) {
   if (loading || !expense) return <LoadingScreen message="Loading expense..." />;
 
   const category = CATEGORIES.find(c => c.id === expense.category) || CATEGORIES[CATEGORIES.length - 1];
-  const isPayer  = expense.paid_by === user.id;
   const mySplit  = expense.splits?.find(s => s.user_id === user.id);
   const myShare  = mySplit?.amount ?? 0;
-  const isMyShareSettled = mySplit?.is_settled ?? false;
-
-  const othersOwe = expense.splits?.filter(s => s.user_id !== user.id && !s.is_settled).reduce((a, s) => a + s.amount, 0) || 0;
-  const isFullySettled = expense.splits?.filter(s => s.user_id !== user.id).every(s => s.is_settled) ?? true;
+  
+  // Calculate my total paid
+  const myPayments = expense.payments?.filter(p => p.user_id === user.id) || [];
+  const myTotalPaid = myPayments.reduce((acc, p) => acc + p.amount, 0);
+  
+  // Balance: Negative means I owe money, Positive means I am owed money
+  const myBalance = myTotalPaid - myShare;
+  const isPayer = myTotalPaid > 0;
+  const isMyShareSettled = mySplit?.is_settled || myBalance >= 0;
 
   return (
     <LinearGradient colors={['#1e0a30', '#130520']} style={styles.root}>
@@ -125,7 +210,7 @@ export default function ExpenseDetailScreen({ route, navigation }) {
         </TouchableOpacity>
         <Text style={styles.headerTitle}>Expense Detail</Text>
         <View style={styles.headerActions}>
-          {isPayer && (
+          {expense.group?.created_by === user.id && (
             <>
               <TouchableOpacity
                 onPress={() => navigation.navigate('AddExpense', { groupId: expense.group_id, expenseId })}
@@ -157,52 +242,47 @@ export default function ExpenseDetailScreen({ route, navigation }) {
           <Text style={styles.heroAmount}>{formatCurrency(expense.amount, expense.group?.currency || 'PHP')}</Text>
         </LinearGradient>
 
-        {/* My Share */}
-        <GlassCard style={[styles.myShareCard, isMyShareSettled && styles.myShareCardGreen]}>
+        {/* My Balance */}
+        <GlassCard style={[styles.myShareCard, myBalance >= 0 && styles.myShareCardGreen]}>
           <View style={styles.myShareRow}>
             <View style={{ backgroundColor: 'transparent' }}>
-              <Text style={styles.myShareLabel}>My Share</Text>
+              <Text style={styles.myShareLabel}>My Balance</Text>
               <Text style={[
                 styles.myShareAmount, 
-                { color: (isPayer || isMyShareSettled) ? COLORS.status.success : COLORS.status.error }
+                { color: myBalance >= 0 ? COLORS.status.success : COLORS.status.error }
               ]}>
-                {(isPayer || isMyShareSettled) ? '+' : '-'}{formatCurrency(myShare, expense.group?.currency || 'PHP')}
+                {myBalance > 0 ? '+' : ''}{formatCurrency(myBalance, expense.group?.currency || 'PHP')}
               </Text>
             </View>
             <View style={[
               styles.payerBadge, 
-              (isPayer || isMyShareSettled) ? styles.payerBadgeGreen : styles.payerBadgeRed
+              myBalance >= 0 ? styles.payerBadgeGreen : styles.payerBadgeRed
             ]}>
-              {isMyShareSettled ? (
+              {myBalance === 0 ? (
                 <>
                   <CheckCircle size={14} color={COLORS.status.success} strokeWidth={2} />
-                  <Text style={[styles.payerBadgeText, { color: COLORS.status.success }]}>Paid</Text>
+                  <Text style={[styles.payerBadgeText, { color: COLORS.status.success }]}>Settled</Text>
+                </>
+              ) : myBalance > 0 ? (
+                <>
+                  <CreditCard size={14} color={COLORS.status.success} strokeWidth={2} />
+                  <Text style={[styles.payerBadgeText, { color: COLORS.status.success }]}>You are owed</Text>
                 </>
               ) : (
                 <>
-                  <CreditCard size={14} color={isPayer ? COLORS.status.success : COLORS.status.error} strokeWidth={2} />
-                  <Text style={[styles.payerBadgeText, { color: isPayer ? COLORS.status.success : COLORS.status.error }]}>
-                    {isPayer ? 'You paid' : `${expense.payer?.full_name || 'Someone'} paid`}
-                  </Text>
+                  <CreditCard size={14} color={COLORS.status.error} strokeWidth={2} />
+                  <Text style={[styles.payerBadgeText, { color: COLORS.status.error }]}>You owe</Text>
                 </>
               )}
             </View>
           </View>
           <View style={styles.instructionBox}>
             <Text style={styles.instructionText}>
-              {isPayer ? (
-                isFullySettled ? (
-                  "🎉 Everyone has paid you back! This expense is fully settled."
-                ) : (
-                  `👉 You paid the full amount. Other members owe you a total of ${formatCurrency(othersOwe, expense.group?.currency || 'PHP')}.`
-                )
-              ) : (
-                isMyShareSettled ? (
-                  `🎉 You settled your share with ${expense.payer?.full_name || 'the payer'}.`
-                ) : (
-                  `👉 Give ${formatCurrency(myShare, expense.group?.currency || 'PHP')} to ${expense.payer?.full_name || 'the payer'}.`
-                )
-              )}
+              {myBalance > 0 
+                ? `You paid ${formatCurrency(myTotalPaid, expense.group?.currency)} and your share is ${formatCurrency(myShare, expense.group?.currency)}. You are owed ${formatCurrency(myBalance, expense.group?.currency)}.`
+                : myBalance < 0 
+                  ? `Your share is ${formatCurrency(myShare, expense.group?.currency)} and you've paid ${formatCurrency(myTotalPaid, expense.group?.currency)}. You still owe ${formatCurrency(Math.abs(myBalance), expense.group?.currency)}.`
+                  : "You are completely settled up for this expense."}
             </Text>
           </View>
         </GlassCard>
@@ -214,59 +294,169 @@ export default function ExpenseDetailScreen({ route, navigation }) {
           {expense.notes && <DetailRow icon={<StickyNote size={16} color={COLORS.lavender} strokeWidth={2} />} label="Notes" value={expense.notes} />}
         </GlassCard>
 
+        {/* Payers */}
+        <GlassCard style={styles.splitsCard}>
+          <Text style={styles.splitsTitle}>Who Paid Initially</Text>
+          {(expense.payments || []).map((p, idx) => (
+             <View key={idx} style={styles.splitRow}>
+               <Avatar name={p.displayName || ''} size={36} />
+               <View style={{ flex: 1 }}>
+                 <Text style={styles.splitName}>{p.displayName}</Text>
+               </View>
+               <Text style={[styles.splitAmount, { color: COLORS.status.success }]}>+{formatCurrency(p.amount, expense.group?.currency || 'PHP')}</Text>
+             </View>
+          ))}
+        </GlassCard>
+
         {/* Splits */}
         <GlassCard style={styles.splitsCard}>
-          <Text style={styles.splitsTitle}>How it's split</Text>
+          <View style={{flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center'}}>
+            <Text style={styles.splitsTitle}>How it's split</Text>
+            {expense.group?.created_by === user.id && (
+              <TouchableOpacity onPress={() => setRecordModalVisible(true)} style={styles.recordBtn}>
+                <Text style={styles.recordBtnText}>Record Payment</Text>
+              </TouchableOpacity>
+            )}
+          </View>
           
           <View style={styles.leaderBanner}>
             <Text style={styles.leaderBannerText}>
-              👑 Group Leader: <Text style={styles.boldText}>{expense.group?.creator_name || 'Owner'}</Text>
+              👑 Creator: <Text style={styles.boldText}>{expense.group?.creator_name || 'Owner'}</Text>
             </Text>
             <Text style={styles.leaderBannerSub}>
               {expense.group?.created_by === user.id 
-                ? "You are the Group Leader! Tap any split below to toggle its status." 
-                : "Only the Group Leader is allowed to mark splits as paid."}
+                ? "You are the Creator! Tap any split below to toggle its status." 
+                : "Only the Creator is allowed to mark splits as paid."}
             </Text>
           </View>
 
-          {(expense.splits || []).map(s => (
-            <View key={s.id} style={styles.splitRow}>
-              <Avatar name={s.displayName || ''} size={36} />
-              <View style={{ flex: 1 }}>
-                <Text style={styles.splitName}>{s.displayName || 'User'}</Text>
-                <Text style={styles.splitSubtext}>
-                  {s.user_id === expense.paid_by 
-                    ? "Paid full amount" 
-                    : (s.is_settled 
-                      ? `Paid ${expense.payer?.full_name?.split(' ')[0] || 'payer'}` 
-                      : `Owes ${expense.payer?.full_name?.split(' ')[0] || 'payer'}`)}
-                </Text>
-              </View>
-              <View style={styles.splitRight}>
-                <Text style={styles.splitAmount}>{formatCurrency(s.amount, expense.group?.currency || 'PHP')}</Text>
-                {s.is_settled ? (
-                  <TouchableOpacity 
-                    style={styles.settledBadge} 
-                    disabled={expense?.group?.created_by !== user.id} 
-                    onPress={() => toggleSplitSettled(s)}
-                  >
-                    <CheckCircle size={12} color={COLORS.babyPink} strokeWidth={2} />
-                    <Text style={styles.settledText}>Paid</Text>
-                  </TouchableOpacity>
-                ) : (
-                  expense?.group?.created_by === user.id && (
-                    <TouchableOpacity style={styles.markPaidBtn} onPress={() => toggleSplitSettled(s)}>
-                      <Text style={styles.markPaidText}>Mark Paid</Text>
+          {(expense.splits || []).map(s => {
+            const hasPartiallyPaid = s.amount_paid > 0 && s.amount_paid < s.amount;
+            return (
+              <View key={s.id} style={styles.splitRow}>
+                <Avatar name={s.displayName || ''} size={36} />
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.splitName}>{s.displayName || 'User'}</Text>
+                  <Text style={styles.splitSubtext}>
+                    {s.is_settled 
+                      ? "Fully Settled"
+                      : hasPartiallyPaid
+                        ? `Paid ${formatCurrency(s.amount_paid, expense.group?.currency)} / ${formatCurrency(s.amount, expense.group?.currency)}`
+                        : "Owes their share"}
+                  </Text>
+                </View>
+                <View style={styles.splitRight}>
+                  <Text style={styles.splitAmount}>{formatCurrency(s.amount, expense.group?.currency || 'PHP')}</Text>
+                  {s.is_settled ? (
+                    <TouchableOpacity 
+                      style={styles.settledBadge} 
+                      disabled={expense?.group?.created_by !== user.id} 
+                      onPress={() => toggleSplitSettled(s)}
+                    >
+                      <CheckCircle size={12} color={COLORS.babyPink} strokeWidth={2} />
+                      <Text style={styles.settledText}>Paid</Text>
                     </TouchableOpacity>
-                  )
-                )}
+                  ) : (
+                    expense?.group?.created_by === user.id && (
+                      <TouchableOpacity style={styles.markPaidBtn} onPress={() => toggleSplitSettled(s)}>
+                        <Text style={styles.markPaidText}>Mark Paid</Text>
+                      </TouchableOpacity>
+                    )
+                  )}
+                </View>
               </View>
-            </View>
-          ))}
+            )
+          })}
         </GlassCard>
 
         <View style={{ height: SPACING[8] }} />
       </ScrollView>
+
+      {/* Advanced Payment Modal */}
+      <Modal visible={recordModalVisible} transparent animationType="slide" onRequestClose={closeRecordModal}>
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            <Text style={styles.modalTitle}>Record Payment</Text>
+            
+            <Text style={styles.modalLabel}>Who is paying?</Text>
+            <ScrollView style={styles.dropdownList} nestedScrollEnabled>
+              {expense.splits?.filter(s => !s.is_settled).map(s => {
+                const identifier = s.user_id || s.guest_member_id;
+                return (
+                  <TouchableOpacity 
+                    key={identifier} 
+                    style={[styles.dropdownItem, selectedPayerId === identifier && styles.dropdownItemSelected]}
+                    onPress={() => setSelectedPayerId(identifier)}
+                  >
+                    <Text style={[styles.dropdownItemText, selectedPayerId === identifier && styles.dropdownItemTextSelected]}>
+                      {s.displayName} (Owes {formatCurrency(s.amount - (s.amount_paid || 0), expense.group?.currency || 'PHP')})
+                    </Text>
+                  </TouchableOpacity>
+                );
+              })}
+              {expense.splits?.filter(s => !s.is_settled).length === 0 && (
+                <Text style={{padding: SPACING[3], color: COLORS.lavender}}>Everyone is settled up!</Text>
+              )}
+            </ScrollView>
+
+            {selectedPayerId !== '' && (
+              <StyledInput 
+                label="Amount Paid"
+                value={amountPaidStr}
+                onChangeText={setAmountPaidStr}
+                keyboardType="numeric"
+                placeholder="Enter amount"
+              />
+            )}
+
+            {selectedPayerId !== '' && (() => {
+              const payerSplit = expense.splits.find(s => s.user_id === selectedPayerId || s.guest_member_id === selectedPayerId);
+              const amountPaid = parseFloat(amountPaidStr) || 0;
+              const owes = (payerSplit?.amount || 0) - (payerSplit?.amount_paid || 0);
+              const isOverpaying = amountPaid > owes;
+              
+              if (isOverpaying) {
+                return (
+                  <View>
+                    <Text style={styles.modalLabel}>Paying for someone else?</Text>
+                    <ScrollView style={styles.dropdownList} nestedScrollEnabled>
+                      {expense.splits?.filter(s => !s.is_settled && s.user_id !== selectedPayerId && s.guest_member_id !== selectedPayerId).map(s => {
+                        const identifier = s.user_id || s.guest_member_id;
+                        return (
+                          <TouchableOpacity 
+                            key={identifier} 
+                            style={[styles.dropdownItem, payingForId === identifier && styles.dropdownItemSelected]}
+                            onPress={() => setPayingForId(identifier)}
+                          >
+                            <Text style={[styles.dropdownItemText, payingForId === identifier && styles.dropdownItemTextSelected]}>
+                              {s.displayName} (Owes {formatCurrency(s.amount - (s.amount_paid || 0), expense.group?.currency || 'PHP')})
+                            </Text>
+                          </TouchableOpacity>
+                        );
+                      })}
+                    </ScrollView>
+
+                    {payingForId !== '' && (
+                      <View style={styles.modalActions}>
+                         <GradientButton title="Settle as Treat" onPress={() => handleAdvancedPayment('treat')} style={{flex:1, marginRight: 4}} textStyle={{fontSize: 12}} />
+                         <GradientButton title="Transfer Debt" variant="secondary" onPress={() => handleAdvancedPayment('transfer')} style={{flex:1, marginLeft: 4}} textStyle={{fontSize: 12}} />
+                      </View>
+                    )}
+                  </View>
+                );
+              } else {
+                return (
+                  <View style={styles.modalActions}>
+                    <GradientButton title="Settle Payment" onPress={() => handleAdvancedPayment('normal')} style={{flex:1}} />
+                  </View>
+                );
+              }
+            })()}
+
+            <OutlineButton title="Cancel" onPress={closeRecordModal} style={{marginTop: SPACING[4]}} />
+          </View>
+        </View>
+      </Modal>
     </LinearGradient>
   );
 }
@@ -311,7 +501,7 @@ const styles = StyleSheet.create({
   detailLeft:     { flexDirection: 'row', alignItems: 'center', gap: SPACING[2] },
   detailLabel:    { color: COLORS.lavender, fontSize: FONTS.sizes.sm },
   detailValue:    { color: COLORS.white,    fontSize: FONTS.sizes.sm, fontWeight: '600', flex: 1, textAlign: 'right', marginLeft: SPACING[4] },
-  splitsCard:     { marginHorizontal: SPACING[5], gap: SPACING[3] },
+  splitsCard:     { marginHorizontal: SPACING[5], gap: SPACING[3], marginBottom: SPACING[3] },
   splitsTitle:    { color: COLORS.white, fontSize: FONTS.sizes.base, fontWeight: '700' },
   splitRow:       { flexDirection: 'row', alignItems: 'center', gap: SPACING[3] },
   splitName:      { flex: 1, color: COLORS.white, fontSize: FONTS.sizes.sm, fontWeight: '600' },
@@ -328,4 +518,16 @@ const styles = StyleSheet.create({
   instructionBox: { marginTop: SPACING[3], paddingTop: SPACING[3], borderTopWidth: 1, borderTopColor: 'rgba(255,255,255,0.08)' },
   instructionText: { color: COLORS.lavender, fontSize: FONTS.sizes.sm, lineHeight: 18, fontStyle: 'italic' },
   splitSubtext:   { color: COLORS.lavender, fontSize: FONTS.sizes.xs, marginTop: 2 },
+  recordBtn:      { backgroundColor: 'rgba(255,173,208,0.15)', paddingHorizontal: SPACING[3], paddingVertical: 4, borderRadius: RADIUS.md },
+  recordBtnText:  { color: COLORS.babyPink, fontSize: FONTS.sizes.xs, fontWeight: '700' },
+  modalOverlay:   { flex: 1, backgroundColor: COLORS.overlay, justifyContent: 'center', padding: SPACING[5] },
+  modalContent:   { backgroundColor: COLORS.background.card, padding: SPACING[5], borderRadius: RADIUS.xl, borderWidth: 1, borderColor: 'rgba(255,173,208,0.25)' },
+  modalTitle:     { color: COLORS.white, fontSize: FONTS.sizes.xl, fontWeight: '800', marginBottom: SPACING[4], textAlign: 'center' },
+  modalLabel:     { color: COLORS.blush, fontSize: FONTS.sizes.sm, fontWeight: '600', marginBottom: SPACING[2], textTransform: 'uppercase' },
+  dropdownList:   { maxHeight: 120, marginBottom: SPACING[4], borderWidth: 1, borderColor: 'rgba(255,173,208,0.2)', borderRadius: RADIUS.md },
+  dropdownItem:   { padding: SPACING[3], borderBottomWidth: 1, borderBottomColor: 'rgba(255,173,208,0.1)' },
+  dropdownItemSelected: { backgroundColor: 'rgba(255,173,208,0.15)' },
+  dropdownItemText: { color: COLORS.lavender, fontSize: FONTS.sizes.sm },
+  dropdownItemTextSelected: { color: COLORS.babyPink, fontWeight: '700' },
+  modalActions:   { flexDirection: 'row', justifyContent: 'space-between', marginTop: SPACING[2] },
 });

@@ -6,13 +6,14 @@ import { ArrowLeft, Pencil, Trash2, Plus, Users, Receipt, UserMinus } from 'luci
 import { useAuth } from '../../context/AuthContext';
 import { supabase, TABLES } from '../../config/supabase';
 import { COLORS, FONTS, SPACING, RADIUS, SHADOWS } from '../../config/theme';
-import { LoadingScreen, Avatar, GlassCard, SectionHeader } from '../../components/UIComponents';
+import { LoadingScreen, Avatar, GlassCard, SectionHeader, useAppAlert } from '../../components/UIComponents';
 import { ExpenseCard } from '../../components/Cards';
 import { formatCurrency } from '../../utils/splitCalculator';
 
 export default function GroupDetailScreen({ route, navigation }) {
   const { groupId, groupName } = route.params;
   const { user } = useAuth();
+  const { showAlert } = useAppAlert();
 
   const [group,    setGroup]    = useState(null);
   const [members,  setMembers]  = useState([]);
@@ -44,37 +45,53 @@ export default function GroupDetailScreen({ route, navigation }) {
   async function fetchExpenses() {
     const { data, error } = await supabase
       .from(TABLES.EXPENSES)
-      .select('*, splits:expense_splits(*)')
+      .select('*, splits:expense_splits(*), payments:expense_payments(*)')
       .eq('group_id', groupId)
       .order('date', { ascending: false });
       
     if (error) {
       console.error('fetchExpenses error:', error.message);
-      Alert.alert('Error loading expenses', error.message);
+      showAlert('Error loading expenses', error.message);
     }
     
     // Manual fetch for users
-    const payerIds = [...new Set((data || []).map(e => e.paid_by))];
+    // Payer is now determined by the first payment, or paid_by fallback
+    const payerIds = [...new Set((data || []).flatMap(e => {
+      if (e.payments && e.payments.length > 0) return e.payments.map(p => p.user_id);
+      return [e.paid_by];
+    }))].filter(Boolean);
+
     const { data: usersData } = await supabase.from(TABLES.USERS).select('id, full_name').in('id', payerIds);
     const usersMap = Object.fromEntries((usersData || []).map(u => [u.id, u.full_name]));
 
-    setExpenses((data || []).map(e => ({ ...e, payer_name: usersMap[e.paid_by] })));
+    setExpenses((data || []).map(e => {
+      let payerName = usersMap[e.paid_by];
+      if (e.payments && e.payments.length > 0) {
+         if (e.payments.length === 1) {
+             payerName = usersMap[e.payments[0].user_id] || 'Guest';
+         } else {
+             payerName = 'Multiple';
+         }
+      }
+      return { ...e, payer_name: payerName };
+    }));
   }
 
   async function handleDeleteGroup() {
-    Alert.alert('Delete Group', 'This will permanently delete the group and all its expenses.', [
+    showAlert('Delete Group', 'This will permanently delete the group and all its expenses.', [
       { text: 'Cancel', style: 'cancel' },
       { text: 'Delete', style: 'destructive', onPress: async () => {
         try {
           const expIds = expenses.map(e => e.id);
           if (expIds.length) {
             await supabase.from(TABLES.EXPENSE_SPLITS).delete().in('expense_id', expIds);
+            await supabase.from('expense_payments').delete().in('expense_id', expIds);
             await supabase.from(TABLES.EXPENSES).delete().in('id', expIds);
           }
           await supabase.from(TABLES.GROUP_MEMBERS).delete().eq('group_id', groupId);
           await supabase.from(TABLES.GROUPS).delete().eq('id', groupId);
           navigation.goBack();
-        } catch (e) { Alert.alert('Error', e.message); }
+        } catch (e) { showAlert('Error', e.message); }
       }},
     ]);
   }
@@ -84,13 +101,22 @@ export default function GroupDetailScreen({ route, navigation }) {
   const myBalance = (() => {
     let b = 0;
     for (const exp of expenses) {
-      if (exp.paid_by === user.id) {
-        b += exp.splits?.filter(s => s.user_id !== user.id && !s.is_settled).reduce((a, s) => a + s.amount, 0) || 0;
-      } else {
-        const mySplit = exp.splits?.find(s => s.user_id === user.id);
-        if (mySplit && !mySplit.is_settled) {
-          b -= mySplit.amount;
-        }
+      // Amount I paid
+      const myTotalPaid = (exp.payments || [])
+         .filter(p => p.user_id === user.id)
+         .reduce((acc, p) => acc + p.amount, 0);
+
+      // My share
+      const mySplit = exp.splits?.find(s => s.user_id === user.id);
+      const myShare = mySplit ? mySplit.amount : 0;
+
+      // Add to balance (positive = owed to me, negative = I owe)
+      // I am owed the money I paid minus my share. If I paid 0 and my share is 50, I owe 50.
+      b += (myTotalPaid - myShare);
+      
+      // Add amount I've already paid back to others directly (settlements)
+      if (mySplit?.is_settled) {
+         b += (mySplit.amount_paid > 0 ? mySplit.amount_paid : myShare); 
       }
     }
     return b;
@@ -146,7 +172,7 @@ export default function GroupDetailScreen({ route, navigation }) {
                 <View key={m.id} style={styles.memberChip}>
                   <Avatar name={displayName} size={44} />
                   <Text style={styles.memberName} numberOfLines={1}>{nameToShow}</Text>
-                  {m.role === 'admin' && <Text style={styles.adminBadge}>admin</Text>}
+                  {m.role === 'admin' && <Text style={styles.adminBadge}>Creator</Text>}
                 </View>
               );
             })}

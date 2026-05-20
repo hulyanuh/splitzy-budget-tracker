@@ -1,9 +1,10 @@
-import React, { useRef } from 'react';
+import React, { useRef, createContext, useContext, useState } from 'react';
 import {
   View, Text, TouchableOpacity, ActivityIndicator,
   StyleSheet, Animated, TextInput,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
+import { BlurView } from 'expo-blur';
 import { COLORS, FONTS, SPACING, RADIUS, SHADOWS } from '../config/theme';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -252,6 +253,87 @@ export function Avatar({ name = '', size = 40, style }) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// 🚨 APP ALERT (THEMED MODAL)
+// ─────────────────────────────────────────────────────────────────────────────
+
+const AlertContext = createContext(null);
+
+export function useAppAlert() {
+  const context = useContext(AlertContext);
+  if (!context) {
+    throw new Error('useAppAlert must be used within an AppAlertProvider');
+  }
+  return context;
+}
+
+export function AppAlertProvider({ children }) {
+  const [alertConfig, setAlertConfig] = useState(null);
+  const fadeAnim = useRef(new Animated.Value(0)).current;
+
+  const showAlert = (title, message, buttons) => {
+    // Default single OK button if none provided
+    const defaultButtons = [{ text: 'OK', onPress: () => {} }];
+    setAlertConfig({ title, message, buttons: buttons || defaultButtons });
+    
+    Animated.timing(fadeAnim, {
+      toValue: 1,
+      duration: 200,
+      useNativeDriver: true,
+    }).start();
+  };
+
+  const closeAlert = (onPress) => {
+    Animated.timing(fadeAnim, {
+      toValue: 0,
+      duration: 150,
+      useNativeDriver: true,
+    }).start(() => {
+      setAlertConfig(null);
+      if (onPress) onPress();
+    });
+  };
+
+  return (
+    <AlertContext.Provider value={{ showAlert }}>
+      {children}
+      {alertConfig && (
+        <Animated.View style={[styles.alertOverlay, { opacity: fadeAnim }]}>
+          {/* Use standard View if BlurView isn't configured, or stick to solid bg */}
+          <BlurView intensity={20} style={styles.alertBackdrop} tint="dark" />
+          <View style={[styles.alertContainer, SHADOWS.lg]}>
+            <LinearGradient colors={COLORS.gradients.card} style={styles.alertInner}>
+              <Text style={styles.alertTitle}>{alertConfig.title}</Text>
+              <Text style={styles.alertMessage}>{alertConfig.message}</Text>
+              
+              <View style={styles.alertButtonsRow}>
+                {alertConfig.buttons.map((btn, idx) => (
+                  <TouchableOpacity
+                    key={idx}
+                    onPress={() => closeAlert(btn.onPress)}
+                    style={[
+                      styles.alertButton,
+                      alertConfig.buttons.length === 2 && idx === 0 && styles.alertButtonCancel, // specific styling if 2 buttons
+                    ]}
+                  >
+                    <Text style={[
+                      styles.alertButtonText,
+                      alertConfig.buttons.length === 2 && idx === 0 && styles.alertButtonTextCancel,
+                      btn.style === 'destructive' && { color: COLORS.status.error }
+                    ]}>
+                      {btn.text}
+                    </Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+            </LinearGradient>
+          </View>
+        </Animated.View>
+      )}
+    </AlertContext.Provider>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // 📋 STYLES
 // ─────────────────────────────────────────────────────────────────────────────
 const styles = StyleSheet.create({
@@ -338,4 +420,66 @@ const styles = StyleSheet.create({
   sectionAction: { color: COLORS.babyPink, fontSize: FONTS.sizes.sm, fontWeight: '600' },
   avatar:        { alignItems: 'center', justifyContent: 'center' },
   avatarText:    { fontWeight: '800' },
+  alertOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    justifyContent: 'center',
+    alignItems: 'center',
+    zIndex: 9999,
+  },
+  alertBackdrop: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(10, 2, 20, 0.85)',
+  },
+  alertContainer: {
+    width: '85%',
+    maxWidth: 340,
+    borderRadius: RADIUS.xl,
+    overflow: 'hidden',
+    borderWidth: 1.5,
+    borderColor: 'rgba(255, 173, 208, 0.25)',
+  },
+  alertInner: {
+    padding: SPACING[5],
+    paddingTop: SPACING[6],
+  },
+  alertTitle: {
+    color: COLORS.white,
+    fontSize: FONTS.sizes.lg,
+    fontWeight: '800',
+    textAlign: 'center',
+    marginBottom: SPACING[3],
+  },
+  alertMessage: {
+    color: COLORS.lavender,
+    fontSize: FONTS.sizes.base,
+    textAlign: 'center',
+    lineHeight: 22,
+    marginBottom: SPACING[6],
+  },
+  alertButtonsRow: {
+    flexDirection: 'row',
+    gap: SPACING[3],
+    justifyContent: 'center',
+  },
+  alertButton: {
+    flex: 1,
+    paddingVertical: SPACING[3],
+    backgroundColor: 'rgba(255,173,208,0.15)',
+    borderRadius: RADIUS.lg,
+    alignItems: 'center',
+  },
+  alertButtonCancel: {
+    backgroundColor: 'transparent',
+    borderWidth: 1,
+    borderColor: 'rgba(255,173,208,0.2)',
+  },
+  alertButtonText: {
+    color: COLORS.babyPink,
+    fontSize: FONTS.sizes.base,
+    fontWeight: '700',
+  },
+  alertButtonTextCancel: {
+    color: COLORS.lavender,
+    fontWeight: '600',
+  },
 });
