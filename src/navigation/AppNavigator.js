@@ -1,5 +1,6 @@
-import React from 'react';
+import React, { useEffect } from 'react';
 import { View, Text, StyleSheet } from 'react-native';
+import * as SplashScreen from 'expo-splash-screen';
 import { NavigationContainer } from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
@@ -117,7 +118,15 @@ function AppStack() {
 
 export default function AppNavigator() {
   const { user, loading } = useAuth();
-  if (loading) return <LoadingScreen message="Starting Splitzy..." />;
+  
+  useEffect(() => {
+    if (!loading) {
+      SplashScreen.hideAsync().catch(() => {});
+    }
+  }, [loading]);
+
+  if (loading) return null; // Keep native splash screen visible instead of double-loading
+
   return (
     <NavigationContainer>
       {user ? <AppStack /> : <AuthStack />}

@@ -18,7 +18,8 @@ export default function ExpenseDetailScreen({ route, navigation }) {
 
   const [recordModalVisible, setRecordModalVisible] = useState(false);
   const [selectedPayerId, setSelectedPayerId] = useState('');
-  const [amountPaidStr, setAmountPaidStr] = useState('');
+  const [amountPaidStr, setAmountPaidStr] = useState(''); // Fallback
+  const [specificPayments, setSpecificPayments] = useState({}); // { [creditorId]: 'amount' }
   const [payingForId, setPayingForId] = useState('');
 
   useEffect(() => { fetchExpense(); }, []);
@@ -86,6 +87,7 @@ export default function ExpenseDetailScreen({ route, navigation }) {
     setRecordModalVisible(false);
     setSelectedPayerId('');
     setAmountPaidStr('');
+    setSpecificPayments({});
     setPayingForId('');
   }
 
@@ -98,20 +100,68 @@ export default function ExpenseDetailScreen({ route, navigation }) {
     setLoading(true);
     try {
       if (mode === 'normal') {
-         // Mark as settled
-         await supabase.from(TABLES.EXPENSE_SPLITS).update({ is_settled: true, amount_paid: payerSplit.amount, settled_at: new Date().toISOString() }).eq('id', payerSplit.id);
+         let totalPaidByPayer = 0;
+         const updates = [];
+
+         // If using specific payments array
+         const hasSpecifics = Object.keys(specificPayments).length > 0;
+         
+         if (hasSpecifics) {
+            for (const [creditorId, amtStr] of Object.entries(specificPayments)) {
+               const amt = parseFloat(amtStr) || 0;
+               if (amt <= 0) continue;
+               
+               totalPaidByPayer += amt;
+               
+               const creditorSplit = expense.splits.find(s => (s.user_id || s.guest_member_id) === creditorId);
+               if (creditorSplit) {
+                  const newCreditorAmt = (parseFloat(creditorSplit.amount_paid) || 0) - amt;
+                  updates.push(
+                     supabase.from(TABLES.EXPENSE_SPLITS).update({
+                        amount_paid: newCreditorAmt
+                     }).eq('id', creditorSplit.id)
+                  );
+               }
+            }
+         } else {
+            // Fallback for simple single input
+            totalPaidByPayer = amountPaid;
+         }
+         
+         if (totalPaidByPayer > 0 || !hasSpecifics) {
+            const newPayerAmt = (parseFloat(payerSplit.amount_paid) || 0) + (totalPaidByPayer || amountPaid);
+            // Verify if payer is now settled
+            const payerBal = balances.find(b => b.identifier === (payerSplit.user_id || payerSplit.guest_member_id));
+            // Original raw balance + newly paid
+            const newBalance = (payerBal ? payerBal.balance : 0) + (totalPaidByPayer || amountPaid);
+            const isFullySettled = newBalance >= -0.01;
+            
+            updates.push(
+               supabase.from(TABLES.EXPENSE_SPLITS).update({
+                  is_settled: isFullySettled,
+                  amount_paid: newPayerAmt,
+                  settled_at: isFullySettled ? new Date().toISOString() : payerSplit.settled_at
+               }).eq('id', payerSplit.id)
+            );
+         }
+         
+         await Promise.all(updates);
       } else {
          const otherSplit = expense.splits.find(s => s.user_id === payingForId || s.guest_member_id === payingForId);
          if (!otherSplit) throw new Error('Other member not found');
          
+         // Mark the payer's split as paid
+         const newPayerAmt = (payerSplit.amount_paid || 0) + (payerSplit.amount - (payerSplit.amount_paid || 0)); // Fully settle payer
          await supabase.from(TABLES.EXPENSE_SPLITS).update({ is_settled: true, amount_paid: payerSplit.amount, settled_at: new Date().toISOString() }).eq('id', payerSplit.id);
+         
+         // Mark the other person's split as paid
          await supabase.from(TABLES.EXPENSE_SPLITS).update({ is_settled: true, amount_paid: otherSplit.amount, settled_at: new Date().toISOString() }).eq('id', otherSplit.id);
          
          if (mode === 'transfer') {
             const { data: newExp, error: expErr } = await supabase.from(TABLES.EXPENSES).insert({
                group_id: expense.group_id,
                title: `Transfer: ${expense.title}`,
-               amount: otherSplit.amount,
+               amount: amountPaid,
                category: 'others',
                paid_by: payerSplit.user_id, // Backward compatibility
                split_type: 'custom',
@@ -125,7 +175,7 @@ export default function ExpenseDetailScreen({ route, navigation }) {
                expense_id: newExp.id,
                user_id: payerSplit.user_id,
                guest_member_id: payerSplit.guest_member_id,
-               amount: otherSplit.amount
+               amount: amountPaid
             });
             
             // Add split for the person who was paid for
@@ -133,7 +183,7 @@ export default function ExpenseDetailScreen({ route, navigation }) {
                expense_id: newExp.id,
                user_id: otherSplit.user_id,
                guest_member_id: otherSplit.guest_member_id,
-               amount: otherSplit.amount,
+               amount: amountPaid,
                is_settled: false
             });
          }
@@ -143,34 +193,6 @@ export default function ExpenseDetailScreen({ route, navigation }) {
     } catch (e) {
       showAlert('Error', e.message);
       setLoading(false);
-    }
-  }
-
-  async function toggleSplitSettled(split) {
-    const isGroupOwner = expense?.group?.created_by === user.id;
-    if (!isGroupOwner) {
-      showAlert('Permission Denied', 'Only the group owner is allowed to mark splits as paid.');
-      return;
-    }
-    const newStatus = !split.is_settled;
-    try {
-      const { error } = await supabase
-        .from(TABLES.EXPENSE_SPLITS)
-        .update({ 
-            is_settled: newStatus, 
-            amount_paid: newStatus ? split.amount : 0,
-            settled_at: newStatus ? new Date().toISOString() : null 
-        })
-        .eq('id', split.id);
-      
-      if (error) throw error;
-      
-      setExpense(prev => ({
-        ...prev,
-        splits: prev.splits.map(s => s.id === split.id ? { ...s, is_settled: newStatus, amount_paid: newStatus ? split.amount : 0 } : s)
-      }));
-    } catch (e) {
-      showAlert('Error', e.message);
     }
   }
 
@@ -185,6 +207,83 @@ export default function ExpenseDetailScreen({ route, navigation }) {
       }},
     ]);
   }
+
+  // Compute exact debts for who owes who
+  const { debts, balances } = React.useMemo(() => {
+    if (!expense || !expense.splits) return { debts: [], balances: [] };
+    
+    let totalOrphanDebt = 0;
+
+    const balances = expense.splits.map(s => {
+      const identifier = s.user_id || s.guest_member_id;
+      const paid = (expense.payments || []).filter(p => (p.user_id || p.guest_member_id) === identifier).reduce((sum, p) => sum + p.amount, 0);
+      
+      const share = s.amount;
+      const debtPaid = parseFloat(s.amount_paid) || 0;
+      
+      totalOrphanDebt += debtPaid;
+      
+      let extraSettled = 0;
+      if (s.is_settled && (paid + debtPaid - share) < 0) {
+         extraSettled = Math.abs(paid + debtPaid - share);
+         totalOrphanDebt += extraSettled;
+      }
+      
+      return {
+        identifier,
+        name: s.displayName || 'User',
+        credit: paid,
+        share: share,
+        debtPaid: debtPaid + extraSettled,
+        balance: paid + debtPaid + extraSettled - share
+      };
+    });
+
+    if (totalOrphanDebt > 0) {
+       const totalCredit = balances.filter(b => b.balance > 0).reduce((sum, b) => sum + b.balance, 0);
+       if (totalCredit > 0) {
+         balances.forEach(b => {
+           if (b.balance > 0) {
+             const reduction = totalOrphanDebt * (b.balance / totalCredit);
+             b.balance -= reduction;
+           }
+         });
+       }
+    }
+
+    const debtors = balances.filter(b => b.balance <= -0.01)
+                            .map(b => ({ ...b, owes: Math.abs(b.balance) }))
+                            .sort((a,b) => b.owes - a.owes);
+                            
+    const creditors = balances.filter(b => b.balance >= 0.01)
+                              .map(b => ({ ...b, owed: b.balance }))
+                              .sort((a,b) => b.owed - a.owed);
+
+    const transactions = [];
+    let i = 0, j = 0;
+
+    while (i < debtors.length && j < creditors.length) {
+      const debtor = debtors[i];
+      const creditor = creditors[j];
+      
+      const amount = Math.min(debtor.owes, creditor.owed);
+      
+      transactions.push({
+        from: debtor.identifier,
+        toId: creditor.identifier,
+        toName: creditor.name,
+        amount: amount
+      });
+      
+      debtor.owes -= amount;
+      creditor.owed -= amount;
+      
+      if (debtor.owes < 0.01) i++;
+      if (creditor.owed < 0.01) j++;
+    }
+    
+    return { debts: transactions, balances };
+  }, [expense]);
 
   if (loading || !expense) return <LoadingScreen message="Loading expense..." />;
 
@@ -331,35 +430,64 @@ export default function ExpenseDetailScreen({ route, navigation }) {
           </View>
 
           {(expense.splits || []).map(s => {
-            const hasPartiallyPaid = s.amount_paid > 0 && s.amount_paid < s.amount;
+            const identifier = s.user_id || s.guest_member_id;
+            const b = balances.find(bal => bal.identifier === identifier);
+            
+            const owes = b && b.balance < -0.01 ? Math.abs(b.balance) : 0;
+            const currentOwedToThem = b && b.balance > 0.01 ? b.balance : 0;
+            const isFullySettled = owes === 0 && currentOwedToThem === 0;
+            
+            const myDebts = debts.filter(d => d.from === identifier);
+
             return (
               <View key={s.id} style={styles.splitRow}>
                 <Avatar name={s.displayName || ''} size={36} />
                 <View style={{ flex: 1 }}>
                   <Text style={styles.splitName}>{s.displayName || 'User'}</Text>
-                  <Text style={styles.splitSubtext}>
-                    {s.is_settled 
-                      ? "Fully Settled"
-                      : hasPartiallyPaid
-                        ? `Paid ${formatCurrency(s.amount_paid, expense.group?.currency)} / ${formatCurrency(s.amount, expense.group?.currency)}`
-                        : "Owes their share"}
-                  </Text>
+                  {isFullySettled ? (
+                    <Text style={styles.splitSubtext}>Fully Settled</Text>
+                  ) : currentOwedToThem > 0.01 ? (
+                    <Text style={styles.splitSubtext}>Owed {formatCurrency(currentOwedToThem, expense.group?.currency)}</Text>
+                  ) : (
+                    <View>
+                      <Text style={styles.splitSubtext}>Owes {formatCurrency(owes, expense.group?.currency)}</Text>
+                      {myDebts.map((d, idx) => (
+                        <Text key={idx} style={{ color: COLORS.blush, fontSize: 11, marginTop: 2, fontStyle: 'italic' }}>
+                          ↳ {formatCurrency(d.amount, expense.group?.currency)} to {d.toName}
+                        </Text>
+                      ))}
+                    </View>
+                  )}
                 </View>
                 <View style={styles.splitRight}>
                   <Text style={styles.splitAmount}>{formatCurrency(s.amount, expense.group?.currency || 'PHP')}</Text>
-                  {s.is_settled ? (
-                    <TouchableOpacity 
-                      style={styles.settledBadge} 
-                      disabled={expense?.group?.created_by !== user.id} 
-                      onPress={() => toggleSplitSettled(s)}
-                    >
+                  {isFullySettled ? (
+                    <View style={styles.settledBadge}>
                       <CheckCircle size={12} color={COLORS.babyPink} strokeWidth={2} />
                       <Text style={styles.settledText}>Paid</Text>
-                    </TouchableOpacity>
+                    </View>
+                  ) : currentOwedToThem > 0.01 ? (
+                    <View style={styles.settledBadge}>
+                      <CheckCircle size={12} color={COLORS.babyPink} strokeWidth={2} />
+                      <Text style={styles.settledText}>Overpaid</Text>
+                    </View>
                   ) : (
                     expense?.group?.created_by === user.id && (
-                      <TouchableOpacity style={styles.markPaidBtn} onPress={() => toggleSplitSettled(s)}>
-                        <Text style={styles.markPaidText}>Mark Paid</Text>
+                      <TouchableOpacity 
+                         style={styles.markPaidBtn} 
+                         onPress={() => {
+                           setSelectedPayerId(identifier);
+                           setAmountPaidStr(owes.toString());
+                           
+                           // Pre-fill specific payments with exact debts!
+                           const defaultSpecs = {};
+                           myDebts.forEach(d => { defaultSpecs[d.toId] = d.amount.toString(); });
+                           setSpecificPayments(defaultSpecs);
+                           
+                           setRecordModalVisible(true);
+                         }}
+                      >
+                         <Text style={styles.markPaidText}>Mark Paid</Text>
                       </TouchableOpacity>
                     )
                   )}
@@ -380,77 +508,76 @@ export default function ExpenseDetailScreen({ route, navigation }) {
             
             <Text style={styles.modalLabel}>Who is paying?</Text>
             <ScrollView style={styles.dropdownList} nestedScrollEnabled>
-              {expense.splits?.filter(s => !s.is_settled).map(s => {
-                const identifier = s.user_id || s.guest_member_id;
-                return (
+              {(() => {
+                const owingSplits = balances.filter(b => b.balance < -0.01);
+
+                if (owingSplits.length === 0) {
+                  return <Text style={{padding: SPACING[3], color: COLORS.lavender}}>Everyone is settled up!</Text>;
+                }
+
+                return owingSplits.map(b => (
                   <TouchableOpacity 
-                    key={identifier} 
-                    style={[styles.dropdownItem, selectedPayerId === identifier && styles.dropdownItemSelected]}
-                    onPress={() => setSelectedPayerId(identifier)}
+                    key={b.identifier} 
+                    style={[styles.dropdownItem, selectedPayerId === b.identifier && styles.dropdownItemSelected]}
+                    onPress={() => {
+                      setSelectedPayerId(b.identifier);
+                      const owesAmt = Math.abs(b.balance);
+                      setAmountPaidStr(owesAmt.toString());
+                      
+                      const myDebts = debts.filter(d => d.from === b.identifier);
+                      const defaultSpecs = {};
+                      myDebts.forEach(d => { defaultSpecs[d.toId] = d.amount.toString(); });
+                      setSpecificPayments(defaultSpecs);
+                    }}
                   >
-                    <Text style={[styles.dropdownItemText, selectedPayerId === identifier && styles.dropdownItemTextSelected]}>
-                      {s.displayName} (Owes {formatCurrency(s.amount - (s.amount_paid || 0), expense.group?.currency || 'PHP')})
+                    <Text style={[styles.dropdownItemText, selectedPayerId === b.identifier && styles.dropdownItemTextSelected]}>
+                      {b.name} (Owes {formatCurrency(Math.abs(b.balance), expense.group?.currency || 'PHP')})
                     </Text>
                   </TouchableOpacity>
-                );
-              })}
-              {expense.splits?.filter(s => !s.is_settled).length === 0 && (
-                <Text style={{padding: SPACING[3], color: COLORS.lavender}}>Everyone is settled up!</Text>
-              )}
+                ));
+              })()}
             </ScrollView>
 
-            {selectedPayerId !== '' && (
-              <StyledInput 
-                label="Amount Paid"
-                value={amountPaidStr}
-                onChangeText={setAmountPaidStr}
-                keyboardType="numeric"
-                placeholder="Enter amount"
-              />
-            )}
-
             {selectedPayerId !== '' && (() => {
-              const payerSplit = expense.splits.find(s => s.user_id === selectedPayerId || s.guest_member_id === selectedPayerId);
-              const amountPaid = parseFloat(amountPaidStr) || 0;
-              const owes = (payerSplit?.amount || 0) - (payerSplit?.amount_paid || 0);
-              const isOverpaying = amountPaid > owes;
+              const payerDebts = debts.filter(d => d.from === selectedPayerId);
+              const hasSpecifics = payerDebts.length > 0;
               
-              if (isOverpaying) {
-                return (
-                  <View>
-                    <Text style={styles.modalLabel}>Paying for someone else?</Text>
-                    <ScrollView style={styles.dropdownList} nestedScrollEnabled>
-                      {expense.splits?.filter(s => !s.is_settled && s.user_id !== selectedPayerId && s.guest_member_id !== selectedPayerId).map(s => {
-                        const identifier = s.user_id || s.guest_member_id;
-                        return (
-                          <TouchableOpacity 
-                            key={identifier} 
-                            style={[styles.dropdownItem, payingForId === identifier && styles.dropdownItemSelected]}
-                            onPress={() => setPayingForId(identifier)}
-                          >
-                            <Text style={[styles.dropdownItemText, payingForId === identifier && styles.dropdownItemTextSelected]}>
-                              {s.displayName} (Owes {formatCurrency(s.amount - (s.amount_paid || 0), expense.group?.currency || 'PHP')})
-                            </Text>
-                          </TouchableOpacity>
-                        );
-                      })}
-                    </ScrollView>
-
-                    {payingForId !== '' && (
-                      <View style={styles.modalActions}>
-                         <GradientButton title="Settle as Treat" onPress={() => handleAdvancedPayment('treat')} style={{flex:1, marginRight: 4}} textStyle={{fontSize: 12}} />
-                         <GradientButton title="Transfer Debt" variant="secondary" onPress={() => handleAdvancedPayment('transfer')} style={{flex:1, marginLeft: 4}} textStyle={{fontSize: 12}} />
-                      </View>
-                    )}
-                  </View>
-                );
-              } else {
-                return (
-                  <View style={styles.modalActions}>
-                    <GradientButton title="Settle Payment" onPress={() => handleAdvancedPayment('normal')} style={{flex:1}} />
-                  </View>
-                );
+              if (hasSpecifics) {
+                 return (
+                    <View style={{ marginTop: SPACING[3] }}>
+                       <Text style={styles.modalLabel}>How much to pay each person?</Text>
+                       {payerDebts.map(d => (
+                          <View key={d.toId} style={{ marginBottom: SPACING[3] }}>
+                             <StyledInput 
+                                label={`Pay to ${d.toName} (Owes ${formatCurrency(d.amount, expense.group?.currency)})`}
+                                value={specificPayments[d.toId] !== undefined ? specificPayments[d.toId] : ''}
+                                onChangeText={(val) => setSpecificPayments(prev => ({ ...prev, [d.toId]: val }))}
+                                keyboardType="numeric"
+                                placeholder={`Amount to pay ${d.toName}`}
+                             />
+                          </View>
+                       ))}
+                       <View style={styles.modalActions}>
+                         <GradientButton title="Settle Payment" onPress={() => handleAdvancedPayment('normal')} style={{flex:1}} />
+                       </View>
+                    </View>
+                 );
               }
+
+              return (
+                 <View style={{ marginTop: SPACING[3] }}>
+                   <StyledInput 
+                     label="Amount Paid"
+                     value={amountPaidStr}
+                     onChangeText={setAmountPaidStr}
+                     keyboardType="numeric"
+                     placeholder="Enter amount"
+                   />
+                   <View style={styles.modalActions}>
+                     <GradientButton title="Settle Payment" onPress={() => handleAdvancedPayment('normal')} style={{flex:1}} />
+                   </View>
+                 </View>
+              );
             })()}
 
             <OutlineButton title="Cancel" onPress={closeRecordModal} style={{marginTop: SPACING[4]}} />

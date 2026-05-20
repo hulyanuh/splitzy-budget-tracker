@@ -114,14 +114,24 @@ export default function AddExpenseScreen({ route, navigation }) {
       const paidBy = (primaryPayerMember && !primaryPayerMember.is_guest) ? primaryPayerMember.id : null;
 
       const expenseData = { group_id: groupId, title: title.trim(), amount: amt, category, date, notes: notes.trim(), paid_by: paidBy, split_type: splitType };
+      let existingSplits = [];
       let expId = expenseId;
-      
+
       if (isEdit) {
-        await supabase.from(TABLES.EXPENSES).update(expenseData).eq('id', expId);
-        await supabase.from(TABLES.EXPENSE_SPLITS).delete().eq('expense_id', expId);
-        await supabase.from('expense_payments').delete().eq('expense_id', expId);
+        const { error: updErr } = await supabase.from(TABLES.EXPENSES).update(expenseData).eq('id', expId);
+        if (updErr) throw updErr;
+        
+        const { data: oldSplits } = await supabase.from(TABLES.EXPENSE_SPLITS).select('*').eq('expense_id', expId);
+        if (oldSplits) existingSplits = oldSplits;
+
+        const { error: delSplitErr } = await supabase.from(TABLES.EXPENSE_SPLITS).delete().eq('expense_id', expId);
+        if (delSplitErr) throw delSplitErr;
+        
+        const { error: delPayErr } = await supabase.from('expense_payments').delete().eq('expense_id', expId);
+        if (delPayErr) throw delPayErr;
       } else {
-        const { data } = await supabase.from(TABLES.EXPENSES).insert(expenseData).select().single();
+        const { data, error: insErr } = await supabase.from(TABLES.EXPENSES).insert(expenseData).select().single();
+        if (insErr) throw insErr;
         expId = data.id;
       }
 
@@ -135,30 +145,44 @@ export default function AddExpenseScreen({ route, navigation }) {
           amount: parseFloat(p.amount)
         };
       });
-      await supabase.from('expense_payments').insert(paymentRows);
+      const { error: payErr } = await supabase.from('expense_payments').insert(paymentRows);
+      if (payErr) throw payErr;
 
       // Build expense_splits
       const splitRows = Object.entries(splitData).map(([uid, splitAmt]) => {
         const member = members.find(m => m.id === uid);
         if (!member) return null;
 
+        const oldSplit = existingSplits.find(s => 
+           (member.is_guest && s.guest_member_id === member.member_row_id) || 
+           (!member.is_guest && s.user_id === uid)
+        );
+        
+        const prevAmountPaid = oldSplit ? (parseFloat(oldSplit.amount_paid) || 0) : 0;
+        const myInitialPayment = paymentRows.find(p => (member.is_guest && p.guest_member_id === member.member_row_id) || (!member.is_guest && p.user_id === uid))?.amount || 0;
+        const totalCredited = myInitialPayment + prevAmountPaid;
+        const isSettled = oldSplit?.is_settled || (totalCredited >= splitAmt);
+
         return { 
           expense_id: expId, 
           user_id: member.is_guest ? null : uid, 
           guest_member_id: member.is_guest ? member.member_row_id : null, 
           amount: splitAmt,
-          amount_paid: 0,
-          is_settled: false
+          amount_paid: prevAmountPaid,
+          is_settled: isSettled,
+          settled_at: oldSplit?.settled_at || null
         };
       }).filter(Boolean);
 
-      await supabase.from(TABLES.EXPENSE_SPLITS).insert(splitRows);
+      const { error: splitErr } = await supabase.from(TABLES.EXPENSE_SPLITS).insert(splitRows);
+      if (splitErr) throw splitErr;
       
       showAlert('Success', 'Expense saved successfully!', [
         { text: 'OK', onPress: () => navigation.goBack() }
       ]);
     } catch (e) { 
-      showAlert('Error', e.message); 
+      console.error(e);
+      showAlert('Error', e.message || 'An error occurred while saving.'); 
     } finally { 
       setLoading(false); 
     }

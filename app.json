@@ -7,9 +7,9 @@
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "dark",
     "splash": {
-      "image": "./assets/splash.jpg",
+      "image": "./assets/logo_dark.png",
       "resizeMode": "contain",
-      "backgroundColor": "#1a0533"
+      "backgroundColor": "#130520"
     },
     "assetBundlePatterns": ["**/*"],
     "ios": {
@@ -19,7 +19,7 @@
     "android": {
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
-        "backgroundColor": "#1a0533"
+        "backgroundColor": "#130520"
       },
       "package": "com.splitzy.app",
       "permissions": [

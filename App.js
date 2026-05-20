@@ -16,15 +16,6 @@ try {
 }
 
 export default function App() {
-  useEffect(() => {
-    // Hide splash once fonts/assets are ready
-    try {
-      SplashScreen.hideAsync().catch(() => {});
-    } catch (e) {
-      console.warn('SplashScreen.hideAsync failed:', e);
-    }
-  }, []);
-
   return (
     <SafeAreaProvider>
       <AuthProvider>
