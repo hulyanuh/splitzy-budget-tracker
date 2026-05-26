@@ -49,13 +49,15 @@ export default function GroupListScreen({ navigation }) {
         let myBalance = 0;
         for (const exp of expenses) {
           if (exp.paid_by === user.id) {
-            const othersShare = exp.splits
-              ?.filter(s => s.user_id !== user.id)
+            const othersUnsettled = exp.splits
+              ?.filter(s => s.user_id !== user.id && !s.is_settled)
               .reduce((a, s) => a + s.amount, 0) || 0;
-            myBalance += othersShare;
+            myBalance += othersUnsettled;
           } else {
-            const myShare = exp.splits?.find(s => s.user_id === user.id)?.amount || 0;
-            myBalance -= myShare;
+            const mySplit = exp.splits?.find(s => s.user_id === user.id);
+            if (mySplit && !mySplit.is_settled) {
+              myBalance -= mySplit.amount;
+            }
           }
         }
 

@@ -101,22 +101,18 @@ export default function GroupDetailScreen({ route, navigation }) {
   const myBalance = (() => {
     let b = 0;
     for (const exp of expenses) {
-      // Amount I paid
-      const myTotalPaid = (exp.payments || [])
-         .filter(p => p.user_id === user.id)
-         .reduce((acc, p) => acc + p.amount, 0);
-
-      // My share
-      const mySplit = exp.splits?.find(s => s.user_id === user.id);
-      const myShare = mySplit ? mySplit.amount : 0;
-
-      // Add to balance (positive = owed to me, negative = I owe)
-      // I am owed the money I paid minus my share. If I paid 0 and my share is 50, I owe 50.
-      b += (myTotalPaid - myShare);
-      
-      // Add amount I've already paid back to others directly (settlements)
-      if (mySplit?.is_settled) {
-         b += (mySplit.amount_paid > 0 ? mySplit.amount_paid : myShare); 
+      if (exp.paid_by === user.id) {
+        // I paid: others owe me their unsettled shares
+        const othersUnsettled = (exp.splits || [])
+          .filter(s => s.user_id !== user.id && !s.is_settled)
+          .reduce((a, s) => a + s.amount, 0);
+        b += othersUnsettled;
+      } else {
+        // Someone else paid: I owe my unsettled share
+        const mySplit = (exp.splits || []).find(s => s.user_id === user.id);
+        if (mySplit && !mySplit.is_settled) {
+          b -= mySplit.amount;
+        }
       }
     }
     return b;

@@ -26,7 +26,7 @@ roommates, and travel buddies track shared expenses and settle up with minimal h
 
 | Layer       | Technology                              |
 |-------------|------------------------------------------|
-| Frontend    | React Native (Expo SDK 52)              |
+| Frontend    | React Native (Expo SDK 54)              |
 | Icons       | Lucide React Native                     |
 | Navigation  | React Navigation v6 (Stack + Tabs)     |
 | Backend     | Supabase (PostgreSQL + Auth + API)      |
@@ -82,7 +82,7 @@ Food, Transport, Accommodation, Entertainment, Shopping, Utilities, Health, Othe
 ## 📁 Project Structure
 
 ```
-splitzy/
+splitzy-budget-tracker/
 ├── App.js                          # Root entry point
 ├── app.json                        # Expo config
 ├── package.json
@@ -129,15 +129,15 @@ splitzy/
 ## 🚀 Setup Guide
 
 ### Prerequisites
-- Node.js 18 LTS — **required**. Node 20+ may cause issues with Expo SDK 52 on Windows.
+- Node.js 18 LTS or Node 20+ (fully supported with Expo SDK 54 on Windows).
   Download from [nodejs.org/en/download](https://nodejs.org/en/download)
 - A [Supabase](https://supabase.com) account (free tier works)
-- **Expo Go** app installed on your Android phone (SDK 52 version)
+- **Expo Go** app installed on your Android phone (SDK 54 version)
 
 ### Step 1 — Install dependencies
 
 ```bash
-cd splitzy
+cd splitzy-budget-tracker
 npm install --legacy-peer-deps
 ```
 
@@ -223,7 +223,7 @@ npm start
 
 ### Connect your phone
 
-1. Install **Expo Go** (SDK 52) on your Android phone
+1. Install **Expo Go** (SDK 54) on your Android phone
 2. Make sure your phone and PC are on the **same WiFi network**
 3. Scan the QR code shown in the terminal with Expo Go
 
@@ -263,6 +263,7 @@ npx expo prebuild --platform android
 | `groups`         | Expense groups                         |
 | `group_members`  | Many-to-many: users ↔ groups           |
 | `expenses`       | Individual expenses                    |
+| `expense_payments`| Records who initially funded the expense|
 | `expense_splits` | How each expense is split per user     |
 
 ### Row Level Security
@@ -294,7 +295,7 @@ All icons use **Lucide React Native** — clean, consistent stroke-based icons t
 ### Expenses
 | Operation | Screen               | Supabase Call |
 |-----------|----------------------|---------------|
-| Create    | AddExpenseScreen     | `insert` into `expenses` + `expense_splits` |
+| Create    | AddExpenseScreen     | `insert` into `expenses`, `expense_splits`, `expense_payments` |
 | Read      | HomeScreen, ExpenseDetailScreen | `select` with joins |
 | Update    | AddExpenseScreen (edit mode) | `update` + re-create splits |
 | Delete    | ExpenseDetailScreen  | `delete` splits first, then expense |
@@ -312,7 +313,7 @@ All icons use **Lucide React Native** — clean, consistent stroke-based icons t
 ## 🐛 Troubleshooting
 
 ### ❌ `node:sea` error on Windows when running `npx expo start`
-Expo SDK 50–52 CLI has a bug on Windows where it tries to create a folder named `node:sea`, which Windows forbids (colons are illegal in folder names).
+Expo SDK 50–54 CLI has a bug on Windows where it tries to create a folder named `node:sea`, which Windows forbids (colons are illegal in folder names).
 
 **Fix:** Always use `npm start` instead of `npx expo start`. The included `patch.js` automatically fixes the offending line in the Expo CLI before starting.
 
@@ -343,8 +344,8 @@ cmd /c "rd /s /q node_modules"
 ### ❌ Project is incompatible with this version of Expo Go
 Your Expo Go app version must match the project's SDK version.
 
-**Fix:** Check which SDK version is in `package.json` (`"expo": "~52.0.0"`) and install the matching Expo Go:
-- SDK 52: https://expo.dev/go?sdkVersion=52&platform=android&device=true
+**Fix:** Check which SDK version is in `package.json` (`"expo": "~54.0.0"`) and install the matching Expo Go:
+- SDK 54: https://expo.dev/go?sdkVersion=54&platform=android&device=true
 
 ---
 

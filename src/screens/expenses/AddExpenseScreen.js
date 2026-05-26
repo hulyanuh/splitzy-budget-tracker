@@ -31,6 +31,47 @@ export default function AddExpenseScreen({ route, navigation }) {
 
   useEffect(() => { loadMembers(); }, []);
 
+  // Load existing expense data when editing
+  useEffect(() => {
+    if (!isEdit) return;
+    async function loadExpense() {
+      const { data } = await supabase
+        .from(TABLES.EXPENSES)
+        .select('*, splits:expense_splits(*), payments:expense_payments(*)')
+        .eq('id', expenseId)
+        .single();
+      if (!data) return;
+
+      setTitle(data.title || '');
+      setAmount(String(data.amount || ''));
+      setCategory(data.category || CATEGORIES[0].id);
+      setDate(data.date || new Date().toISOString().split('T')[0]);
+      setNotes(data.notes || '');
+      setSplitType(data.split_type || SPLIT_TYPES.EQUAL);
+
+      // Pre-fill payers from payments
+      if (data.payments && data.payments.length > 0) {
+        setPayers(data.payments.map(p => ({
+          memberId: p.user_id || `guest_${p.guest_member_id}`,
+          amount: String(p.amount || '')
+        })));
+      } else if (data.paid_by) {
+        setPayers([{ memberId: data.paid_by, amount: String(data.amount || '') }]);
+      }
+
+      // Pre-fill custom splits
+      if (data.split_type === SPLIT_TYPES.CUSTOM && data.splits) {
+        const customSplits = {};
+        data.splits.forEach(s => {
+          const id = s.user_id || `guest_${s.guest_member_id}`;
+          customSplits[id] = String(s.amount || '');
+        });
+        setSplits(customSplits);
+      }
+    }
+    loadExpense();
+  }, [isEdit, expenseId]);
+
   // When expense amount changes, if there is only one payer, auto-fill their amount
   useEffect(() => {
     if (payers.length === 1 && amount) {
@@ -114,15 +155,11 @@ export default function AddExpenseScreen({ route, navigation }) {
       const paidBy = (primaryPayerMember && !primaryPayerMember.is_guest) ? primaryPayerMember.id : null;
 
       const expenseData = { group_id: groupId, title: title.trim(), amount: amt, category, date, notes: notes.trim(), paid_by: paidBy, split_type: splitType };
-      let existingSplits = [];
       let expId = expenseId;
 
       if (isEdit) {
         const { error: updErr } = await supabase.from(TABLES.EXPENSES).update(expenseData).eq('id', expId);
         if (updErr) throw updErr;
-        
-        const { data: oldSplits } = await supabase.from(TABLES.EXPENSE_SPLITS).select('*').eq('expense_id', expId);
-        if (oldSplits) existingSplits = oldSplits;
 
         const { error: delSplitErr } = await supabase.from(TABLES.EXPENSE_SPLITS).delete().eq('expense_id', expId);
         if (delSplitErr) throw delSplitErr;
@@ -153,24 +190,18 @@ export default function AddExpenseScreen({ route, navigation }) {
         const member = members.find(m => m.id === uid);
         if (!member) return null;
 
-        const oldSplit = existingSplits.find(s => 
-           (member.is_guest && s.guest_member_id === member.member_row_id) || 
-           (!member.is_guest && s.user_id === uid)
-        );
-        
-        const prevAmountPaid = oldSplit ? (parseFloat(oldSplit.amount_paid) || 0) : 0;
+        // When editing, determine settlement only from current payments (not old state)
         const myInitialPayment = paymentRows.find(p => (member.is_guest && p.guest_member_id === member.member_row_id) || (!member.is_guest && p.user_id === uid))?.amount || 0;
-        const totalCredited = myInitialPayment + prevAmountPaid;
-        const isSettled = oldSplit?.is_settled || (totalCredited >= splitAmt);
+        const isSettled = myInitialPayment >= splitAmt;
 
         return { 
           expense_id: expId, 
           user_id: member.is_guest ? null : uid, 
           guest_member_id: member.is_guest ? member.member_row_id : null, 
           amount: splitAmt,
-          amount_paid: prevAmountPaid,
+          amount_paid: 0,
           is_settled: isSettled,
-          settled_at: oldSplit?.settled_at || null
+          settled_at: isSettled ? new Date().toISOString() : null
         };
       }).filter(Boolean);
 
