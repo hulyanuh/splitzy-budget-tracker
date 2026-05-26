@@ -1,8 +1,9 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useCallback } from 'react';
 import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Modal } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { ArrowLeft, Pencil, Trash2, CreditCard, CalendarDays, StickyNote, SplitSquareHorizontal, CheckCircle } from 'lucide-react-native';
 import { useAuth } from '../../context/AuthContext';
+import { useFocusEffect } from '@react-navigation/native';
 import { supabase, TABLES, CATEGORIES } from '../../config/supabase';
 import { COLORS, FONTS, SPACING, RADIUS, SHADOWS } from '../../config/theme';
 import { LoadingScreen, GlassCard, Avatar, StyledInput, GradientButton, OutlineButton, useAppAlert } from '../../components/UIComponents';
@@ -22,7 +23,7 @@ export default function ExpenseDetailScreen({ route, navigation }) {
   const [specificPayments, setSpecificPayments] = useState({}); // { [creditorId]: 'amount' }
   const [payingForId, setPayingForId] = useState('');
 
-  useEffect(() => { fetchExpense(); }, []);
+  useFocusEffect(useCallback(() => { fetchExpense(); }, [expenseId]));
 
   async function fetchExpense() {
     const { data, error } = await supabase

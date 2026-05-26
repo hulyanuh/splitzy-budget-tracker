@@ -8,7 +8,7 @@ import { supabase, TABLES } from '../../config/supabase';
 import { COLORS, FONTS, SPACING, RADIUS, SHADOWS } from '../../config/theme';
 import { LoadingScreen, Avatar, GlassCard, SectionHeader, useAppAlert } from '../../components/UIComponents';
 import { ExpenseCard } from '../../components/Cards';
-import { formatCurrency } from '../../utils/splitCalculator';
+import { formatCurrency, calculateGroupBalances, calculateMemberSummary } from '../../utils/splitCalculator';
 
 export default function GroupDetailScreen({ route, navigation }) {
   const { groupId, groupName } = route.params;
@@ -38,7 +38,11 @@ export default function GroupDetailScreen({ route, navigation }) {
       .from(TABLES.GROUP_MEMBERS)
       .select('*, user:users(id, full_name, email)')
       .eq('group_id', groupId);
-    setMembers(data || []);
+    setMembers((data || []).map(m => ({
+      ...m,
+      participant_id: m.user_id || `guest_${m.id}`,
+      display_name: m.user?.full_name || m.display_name || 'Guest',
+    })));
     setIsAdmin(data?.find(m => m.user_id === user.id)?.role === 'admin');
   }
 
@@ -98,25 +102,9 @@ export default function GroupDetailScreen({ route, navigation }) {
 
   if (loading) return <LoadingScreen message="Loading group..." />;
 
-  const myBalance = (() => {
-    let b = 0;
-    for (const exp of expenses) {
-      if (exp.paid_by === user.id) {
-        // I paid: others owe me their unsettled shares
-        const othersUnsettled = (exp.splits || [])
-          .filter(s => s.user_id !== user.id && !s.is_settled)
-          .reduce((a, s) => a + s.amount, 0);
-        b += othersUnsettled;
-      } else {
-        // Someone else paid: I owe my unsettled share
-        const mySplit = (exp.splits || []).find(s => s.user_id === user.id);
-        if (mySplit && !mySplit.is_settled) {
-          b -= mySplit.amount;
-        }
-      }
-    }
-    return b;
-  })();
+  const memberSummary = calculateMemberSummary(expenses, members);
+  const balances = calculateGroupBalances(expenses, members.map(m => m.participant_id));
+  const myBalance = balances[user.id] ?? balances[`guest_${user.id}`] ?? 0;
 
   return (
     <LinearGradient colors={['#1e0a30', '#130520']} style={styles.root}>
@@ -198,6 +186,33 @@ export default function GroupDetailScreen({ route, navigation }) {
           )}
         </View>
 
+        {/* Member Balances */}
+        {members.length > 0 && (
+          <View style={styles.section}>
+            <SectionHeader title="Member Balance Summary" />
+            {memberSummary.map(member => {
+              const balanceColor = member.balance > 0 ? COLORS.status.success : member.balance < 0 ? COLORS.status.error : COLORS.lavender;
+              return (
+                <GlassCard key={member.id} style={styles.balanceRow}>
+                  <View style={styles.balanceRowLeft}>
+                    <Avatar name={member.display_name || member.user?.full_name || 'Guest'} size={40} />
+                    <View style={styles.balanceRowInfo}>
+                      <Text style={styles.balanceRowName}>{member.display_name || member.user?.full_name || 'Guest'}</Text>
+                      <Text style={styles.balanceRowSub}>
+                        Paid {formatCurrency(member.totalPaid, group?.currency || 'PHP')} · Share {formatCurrency(member.totalShare, group?.currency || 'PHP')}
+                      </Text>
+                    </View>
+                  </View>
+                  <View style={styles.balanceRowRight}>
+                    <Text style={[styles.balanceRowAmount, { color: balanceColor }]}>{member.balance >= 0 ? '+' : ''}{formatCurrency(member.balance, group?.currency || 'PHP')}</Text>
+                    <Text style={[styles.balanceRowLabel, { color: balanceColor }]}>{member.label}</Text>
+                  </View>
+                </GlassCard>
+              );
+            })}
+          </View>
+        )}
+
         <View style={{ height: SPACING[8] }} />
       </ScrollView>
 
@@ -231,6 +246,14 @@ const styles = StyleSheet.create({
   memberChip:     { alignItems: 'center', width: 64 },
   memberName:     { color: COLORS.white, fontSize: FONTS.sizes.xs, marginTop: SPACING[1], fontWeight: '600', textAlign: 'center' },
   adminBadge:     { color: COLORS.babyPink, fontSize: 9, fontWeight: '700', marginTop: 2 },
+  balanceRow:     { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', padding: SPACING[4], marginBottom: SPACING[2] },
+  balanceRowLeft: { flexDirection: 'row', alignItems: 'center', flex: 1, gap: SPACING[3] },
+  balanceRowInfo: { flex: 1 },
+  balanceRowName: { color: COLORS.white, fontSize: FONTS.sizes.base, fontWeight: '700' },
+  balanceRowSub:  { color: COLORS.muted, fontSize: FONTS.sizes.xs, marginTop: 2 },
+  balanceRowRight:{ alignItems: 'flex-end' },
+  balanceRowAmount:{ fontSize: FONTS.sizes.base, fontWeight: '800' },
+  balanceRowLabel: { fontSize: FONTS.sizes.xs, fontWeight: '600', marginTop: 2 },
   emptyCard:      { alignItems: 'center', padding: SPACING[6], gap: SPACING[3] },
   emptyText:      { color: COLORS.lavender, fontSize: FONTS.sizes.base },
   emptyAction:    { color: COLORS.babyPink, fontSize: FONTS.sizes.sm, fontWeight: '700' },

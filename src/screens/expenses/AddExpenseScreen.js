@@ -6,7 +6,7 @@ import { useAuth } from '../../context/AuthContext';
 import { supabase, TABLES, CATEGORIES, SPLIT_TYPES } from '../../config/supabase';
 import { COLORS, FONTS, SPACING, RADIUS, SHADOWS } from '../../config/theme';
 import { StyledInput, GradientButton, GlassCard, Avatar, useAppAlert } from '../../components/UIComponents';
-import { calculateEqualSplit, validateCustomSplit } from '../../utils/splitCalculator';
+import { calculateEqualSplit, validateCustomSplit, calculatePercentageSplit, validatePercentageSplit } from '../../utils/splitCalculator';
 
 export default function AddExpenseScreen({ route, navigation }) {
   const { groupId, groupName, expenseId } = route.params || {};
@@ -59,7 +59,7 @@ export default function AddExpenseScreen({ route, navigation }) {
         setPayers([{ memberId: data.paid_by, amount: String(data.amount || '') }]);
       }
 
-      // Pre-fill custom splits
+      // Pre-fill custom or percentage splits
       if (data.split_type === SPLIT_TYPES.CUSTOM && data.splits) {
         const customSplits = {};
         data.splits.forEach(s => {
@@ -67,6 +67,16 @@ export default function AddExpenseScreen({ route, navigation }) {
           customSplits[id] = String(s.amount || '');
         });
         setSplits(customSplits);
+      }
+      if (data.split_type === SPLIT_TYPES.PERCENTAGE && data.splits) {
+        const percentageSplits = {};
+        const totalAmount = parseFloat(data.amount) || 0;
+        data.splits.forEach(s => {
+          const id = s.user_id || `guest_${s.guest_member_id}`;
+          const splitAmount = parseFloat(s.amount) || 0;
+          percentageSplits[id] = totalAmount > 0 ? String(((splitAmount / totalAmount) * 100).toFixed(2)) : '0';
+        });
+        setSplits(percentageSplits);
       }
     }
     loadExpense();
@@ -100,9 +110,13 @@ export default function AddExpenseScreen({ route, navigation }) {
   }
 
   function getSplitData() {
-    return splitType === SPLIT_TYPES.EQUAL
-      ? getEqualSplits()
-      : Object.fromEntries(Object.entries(splits).map(([k, v]) => [k, parseFloat(v) || 0]));
+    if (splitType === SPLIT_TYPES.EQUAL) {
+      return getEqualSplits();
+    }
+    if (splitType === SPLIT_TYPES.PERCENTAGE) {
+      return calculatePercentageSplit(parseFloat(amount) || 0, members.map(m => m.id), splits);
+    }
+    return Object.fromEntries(Object.entries(splits).map(([k, v]) => [k, parseFloat(v) || 0]));
   }
 
   const addPayer = (memberId) => {
@@ -142,6 +156,10 @@ export default function AddExpenseScreen({ route, navigation }) {
     // Validate Splits
     if (splitType === SPLIT_TYPES.CUSTOM && !validateCustomSplit(amt, splits)) {
       showAlert('Invalid Split', 'Custom splits must add up to the total amount.'); 
+      return;
+    }
+    if (splitType === SPLIT_TYPES.PERCENTAGE && !validatePercentageSplit(splits)) {
+      showAlert('Invalid Split', 'Percentage splits must add up to 100%.');
       return;
     }
 
@@ -327,7 +345,7 @@ export default function AddExpenseScreen({ route, navigation }) {
               <GlassCard style={styles.card}>
                 <Text style={styles.fieldLabel}>HOW TO SPLIT</Text>
                 <View style={styles.splitTypeRow}>
-                  {[SPLIT_TYPES.EQUAL, SPLIT_TYPES.CUSTOM].map(t => (
+                  {[SPLIT_TYPES.EQUAL, SPLIT_TYPES.CUSTOM, SPLIT_TYPES.PERCENTAGE].map(t => (
                     <TouchableOpacity key={t} onPress={() => setSplitType(t)}
                       style={[styles.splitTypeBtn, splitType === t && styles.splitTypeBtnActive]}>
                       <SplitSquareHorizontal size={14} color={splitType === t ? COLORS.babyPink : COLORS.lavender} strokeWidth={2} />
@@ -349,6 +367,54 @@ export default function AddExpenseScreen({ route, navigation }) {
                     />
                   </View>
                 ))}
+
+                {splitType === SPLIT_TYPES.PERCENTAGE && members.map(m => {
+                  const percentage = splits[m.id] || '';
+                  const amountShare = getSplitData()[m.id] ?? 0;
+                  return (
+                    <View key={m.id} style={styles.customSplitRow}>
+                      <Avatar name={m.full_name || ''} size={32} />
+                      <Text style={styles.customSplitName}>{m.full_name?.split(' ')[0] || 'User'}</Text>
+                      <StyledInput
+                        value={percentage}
+                        onChangeText={v => setSplits(prev => ({ ...prev, [m.id]: v }))}
+                        placeholder="0%"
+                        keyboardType="decimal-pad"
+                        containerStyle={{ flex: 1, marginBottom: 0 }}
+                        inputStyle={{ textAlign: 'right' }}
+                      />
+                      <Text style={styles.percentHint}>{`P${amountShare.toFixed(2)}`}</Text>
+                    </View>
+                  );
+                })}
+
+                {/* Remaining indicator for CUSTOM / PERCENTAGE */}
+                {splitType === SPLIT_TYPES.CUSTOM && (
+                  (() => {
+                    const total = parseFloat(amount) || 0;
+                    const sum = Object.values(splits).reduce((s, v) => s + (parseFloat(v || 0) || 0), 0);
+                    const remaining = parseFloat((total - sum).toFixed(2));
+                    return (
+                      <View style={{ alignItems: 'flex-end', marginTop: SPACING[2] }}>
+                        <Text style={styles.remainingText}>Remaining: {`P${remaining.toFixed(2)}`}</Text>
+                      </View>
+                    );
+                  })()
+                )}
+
+                {splitType === SPLIT_TYPES.PERCENTAGE && (
+                  (() => {
+                    const total = parseFloat(amount) || 0;
+                    const percentSum = Object.values(splits).reduce((s, v) => s + (parseFloat(v || 0) || 0), 0);
+                    const remainingPct = parseFloat((100 - percentSum).toFixed(2));
+                    const remainingAmt = parseFloat(((total * remainingPct) / 100).toFixed(2));
+                    return (
+                      <View style={{ alignItems: 'flex-end', marginTop: SPACING[2] }}>
+                        <Text style={styles.remainingText}>Remaining: {`${remainingPct}%`} {`(P${remainingAmt.toFixed(2)})`}</Text>
+                      </View>
+                    );
+                  })()
+                )}
 
                 {splitType === SPLIT_TYPES.EQUAL && (
                   <View style={styles.equalPreview}>
@@ -460,6 +526,7 @@ const styles = StyleSheet.create({
   splitTypeText:      { color: COLORS.lavender, fontSize: FONTS.sizes.sm, fontWeight: '600' },
   customSplitRow:     { flexDirection: 'row', alignItems: 'center', gap: SPACING[3] },
   customSplitName:    { color: COLORS.white, fontSize: FONTS.sizes.sm, fontWeight: '600', width: 60 },
+  percentHint:        { color: COLORS.lavender, fontSize: FONTS.sizes.xs, marginLeft: SPACING[2], minWidth: 50, textAlign: 'right' },
   equalPreview:       { backgroundColor: 'rgba(255,173,208,0.1)', borderRadius: RADIUS.lg, padding: SPACING[4], alignItems: 'center', borderWidth: 1, borderColor: 'rgba(255,173,208,0.2)' },
   equalPreviewText:   { color: COLORS.white, fontSize: FONTS.sizes.base, fontWeight: '700', textAlign: 'center', lineHeight: 24 },
   confirmTitle:       { color: COLORS.white, fontSize: FONTS.sizes.xl, fontWeight: '800' },

@@ -42,7 +42,15 @@ export default function HomeScreen({ navigation }) {
   async function fetchRecentExpenses() {
     const { data: mg } = await supabase.from(TABLES.GROUP_MEMBERS).select('group_id').eq('user_id', user.id);
     if (!mg?.length) return;
-    const { data, error } = await supabase
+    
+    // Fetch all expenses for balance calculation (no limit)
+    const { data: allExpenses } = await supabase
+      .from(TABLES.EXPENSES)
+      .select('*, splits:expense_splits(*), payments:expense_payments(*)')
+      .in('group_id', mg.map(g => g.group_id));
+    
+    // Fetch only recent expenses for display (limit 5)
+    const { data: recentData, error } = await supabase
       .from(TABLES.EXPENSES)
       .select('*, splits:expense_splits(*)')
       .in('group_id', mg.map(g => g.group_id))
@@ -50,24 +58,39 @@ export default function HomeScreen({ navigation }) {
     if (error) { console.error(error); return; }
     
     // Manual fetch for users to bypass missing foreign keys
-    const payerIds = [...new Set((data || []).map(e => e.paid_by))];
+    const payerIds = [...new Set((recentData || []).map(e => e.paid_by))];
     const { data: usersData } = await supabase.from(TABLES.USERS).select('id, full_name').in('id', payerIds);
     const usersMap = Object.fromEntries((usersData || []).map(u => [u.id, u.full_name]));
 
-    const expenses = (data || []).map(e => ({ ...e, payer_name: usersMap[e.paid_by] }));
+    const expenses = (recentData || []).map(e => ({ ...e, payer_name: usersMap[e.paid_by] }));
     setRecentExpenses(expenses);
+    
+    // Calculate balance from ALL expenses, not just recent ones
     let owed = 0, owing = 0;
-    for (const exp of expenses) {
-      if (exp.paid_by === user.id) {
-        owed += exp.splits?.filter(s => s.user_id !== user.id && !s.is_settled).reduce((a, s) => a + s.amount, 0) || 0;
+    for (const exp of (allExpenses || [])) {
+      // Use payments if available, fallback to paid_by
+      const payments = exp.payments || [];
+      const myPayments = payments.filter(p => p.user_id === user.id);
+      const myTotalPaid = myPayments.reduce((a, p) => a + (parseFloat(p.amount) || 0), 0);
+      const iAmPayer = myTotalPaid > 0 || (exp.paid_by === user.id && !payments.length);
+      
+      if (iAmPayer) {
+        // I paid, so sum what others owe me (unsettled splits)
+        const othersShare = (exp.splits || []).filter(s => {
+          const sid = s.user_id || (s.guest_member_id ? `guest_${s.guest_member_id}` : null);
+          return sid !== user.id && !s.is_settled;
+        }).reduce((a, s) => a + (parseFloat(s.amount) || 0), 0);
+        owed += othersShare;
       } else {
-        const mySplit = exp.splits?.find(s => s.user_id === user.id);
+        // I didn't pay, so check what I owe
+        const mySplit = (exp.splits || []).find(s => s.user_id === user.id);
         if (mySplit && !mySplit.is_settled) {
-          owing += mySplit.amount;
+          owing += parseFloat(mySplit.amount) || 0;
         }
       }
     }
-    setTotalOwed(owed); setTotalOwing(owing);
+    setTotalOwed(owed); 
+    setTotalOwing(owing);
   }
 
   if (loading) return <LoadingScreen message="Loading your dashboard..." />;

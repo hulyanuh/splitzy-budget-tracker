@@ -21,40 +21,96 @@ export default function SummaryScreen({ route, navigation }) {
   useFocusEffect(useCallback(() => { loadData(); }, []));
 
   async function loadData() {
-    let mData = [], eData = [];
+    let allMembers = [];
+    let eData = [];
+    
     if (groupId) {
-      const [mRes, eRes] = await Promise.all([
-        supabase.from(TABLES.GROUP_MEMBERS).select('*, user:users(id, full_name, email)').eq('group_id', groupId),
-        supabase.from(TABLES.EXPENSES).select('*, splits:expense_splits(*)').eq('group_id', groupId),
-      ]);
-      mData = mRes.data; eData = eRes.data;
+      // Single group view
+      const { data: groupMembers } = await supabase
+        .from(TABLES.GROUP_MEMBERS)
+        .select('*, user:users(id, full_name, email)')
+        .eq('group_id', groupId);
+      
+      const { data: expenses } = await supabase
+        .from(TABLES.EXPENSES)
+        .select('*, splits:expense_splits(*), payments:expense_payments(*)')
+        .eq('group_id', groupId);
+      
+      eData = expenses || [];
+      allMembers = (groupMembers || []).map(m => {
+        if (m.user) {
+          return { id: m.user.id, full_name: m.user.full_name || m.user.email?.split('@')[0] || 'User', email: m.user.email, is_guest: false };
+        } else {
+          return { id: `guest_${m.id}`, full_name: m.display_name || 'Guest', email: 'Guest', is_guest: true, member_row_id: m.id };
+        }
+      });
     } else {
-      // Global Summary across all groups
+      // Global summary across all groups
       const { data: myGroups } = await supabase.from(TABLES.GROUP_MEMBERS).select('group_id').eq('user_id', user.id);
       if (myGroups && myGroups.length > 0) {
         const groupIds = myGroups.map(g => g.group_id);
-        const [mRes, eRes] = await Promise.all([
-          supabase.from(TABLES.GROUP_MEMBERS).select('*, user:users(id, full_name, email)').in('group_id', groupIds),
-          supabase.from(TABLES.EXPENSES).select('*, splits:expense_splits(*)').in('group_id', groupIds),
-        ]);
-        mData = mRes.data; eData = eRes.data;
-        // Deduplicate members across multiple groups
-        const uniqueMembers = {};
-        (mData || []).forEach(m => { if (m.user) uniqueMembers[m.user.id] = m.user; });
-        mData = Object.values(uniqueMembers);
+        
+        const { data: groupMembers } = await supabase
+          .from(TABLES.GROUP_MEMBERS)
+          .select('*, user:users(id, full_name, email)')
+          .in('group_id', groupIds);
+        
+        const { data: expenses } = await supabase
+          .from(TABLES.EXPENSES)
+          .select('*, splits:expense_splits(*), payments:expense_payments(*)')
+          .in('group_id', groupIds);
+        
+        eData = expenses || [];
+        
+        // Deduplicate and map members
+        const uniqueMembersMap = {};
+        (groupMembers || []).forEach(m => {
+          if (m.user) {
+            uniqueMembersMap[m.user.id] = { id: m.user.id, full_name: m.user.full_name || m.user.email?.split('@')[0] || 'User', email: m.user.email, is_guest: false };
+          } else {
+            const guestId = `guest_${m.id}`;
+            uniqueMembersMap[guestId] = { id: guestId, full_name: m.display_name || 'Guest', email: 'Guest', is_guest: true, member_row_id: m.id };
+          }
+        });
+        allMembers = Object.values(uniqueMembersMap);
       }
     }
     
-    setMembers((mData || []).map(m => (m.user ? { ...m.user } : m)));
-    setExpenses(eData || []);
+    setMembers(allMembers);
+    setExpenses(eData);
     setLoading(false);
   }
 
   if (loading) return <LoadingScreen message="Calculating balances..." />;
 
+  // Calculate per-group balances for settle-up (only within same group)
+  const expensesByGroup = {};
+  expenses.forEach(e => {
+    if (!expensesByGroup[e.group_id]) expensesByGroup[e.group_id] = [];
+    expensesByGroup[e.group_id].push(e);
+  });
+
+  const groupTransactions = {};
+  for (const [gid, groupExpenses] of Object.entries(expensesByGroup)) {
+    const groupMembers = members.filter(m => {
+      // Check if this member has expenses in this group
+      return groupExpenses.some(e => {
+        const payments = e.payments || [];
+        const splits = e.splits || [];
+        const paymentIds = payments.map(p => p.user_id || (p.guest_member_id ? `guest_${p.guest_member_id}` : null));
+        const splitIds = splits.map(s => s.user_id || (s.guest_member_id ? `guest_${s.guest_member_id}` : null));
+        return [...paymentIds, ...splitIds].includes(m.id);
+      });
+    });
+    const groupBalances = calculateGroupBalances(groupExpenses, groupMembers.map(m => m.id));
+    groupTransactions[gid] = simplifyDebts(groupBalances);
+  }
+
+  // Combine all transactions from all groups
+  const transactions = Object.values(groupTransactions).flat();
+
   const balancesMap   = calculateGroupBalances(expenses, members.map(m => m.id));
   const memberStats   = calculateMemberSummary(expenses, members);
-  const transactions  = simplifyDebts(balancesMap);
   const memberMap     = Object.fromEntries(members.map(m => [m.id, m]));
 
   const categoryTotals = CATEGORIES.map(c => {
@@ -63,11 +119,36 @@ export default function SummaryScreen({ route, navigation }) {
   }).filter(c => c.total > 0).sort((a, b) => b.total - a.total);
   const grandTotal = categoryTotals.reduce((a, c) => a + c.total, 0);
 
+  // Personal category spending (only what the current user spent)
+  const myPersonalCategories = CATEGORIES.map(c => {
+    const total = expenses.filter(e => {
+      if (e.category !== c.id) return false;
+      // Sum what the current user paid for this expense
+      const myPayments = (e.payments || []).filter(p => p.user_id === user.id);
+      const myTotalPaid = myPayments.reduce((sum, p) => sum + (parseFloat(p.amount) || 0), 0);
+      return myTotalPaid > 0 || (e.paid_by === user.id && !e.payments?.length);
+    }).reduce((a, e) => {
+      const myPayments = (e.payments || []).filter(p => p.user_id === user.id);
+      const myTotalPaid = myPayments.reduce((sum, p) => sum + (parseFloat(p.amount) || 0), 0);
+      return a + (myTotalPaid > 0 ? myTotalPaid : (e.paid_by === user.id && !e.payments?.length ? e.amount : 0));
+    }, 0);
+    return { ...c, total };
+  }).filter(c => c.total > 0).sort((a, b) => b.total - a.total);
+  const myPersonalTotal = myPersonalCategories.reduce((a, c) => a + c.total, 0);
+
+  // This month - only what the current user spent
   const now = new Date();
-  const thisMonthTotal = expenses.filter(e => {
+  const thisMonthPersonal = expenses.filter(e => {
     const d = new Date(e.date);
-    return d.getMonth() === now.getMonth() && d.getFullYear() === now.getFullYear();
-  }).reduce((a, e) => a + e.amount, 0);
+    if (d.getMonth() !== now.getMonth() || d.getFullYear() !== now.getFullYear()) return false;
+    const myPayments = (e.payments || []).filter(p => p.user_id === user.id);
+    const myTotalPaid = myPayments.reduce((sum, p) => sum + (parseFloat(p.amount) || 0), 0);
+    return myTotalPaid > 0 || (e.paid_by === user.id && !e.payments?.length);
+  }).reduce((a, e) => {
+    const myPayments = (e.payments || []).filter(p => p.user_id === user.id);
+    const myTotalPaid = myPayments.reduce((sum, p) => sum + (parseFloat(p.amount) || 0), 0);
+    return a + (myTotalPaid > 0 ? myTotalPaid : (e.paid_by === user.id && !e.payments?.length ? e.amount : 0));
+  }, 0);
 
   const myBalance = balancesMap[user.id] || 0;
 
@@ -93,11 +174,11 @@ export default function SummaryScreen({ route, navigation }) {
           <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginBottom: SPACING[3] }}>
             <View>
               <Text style={{ color: COLORS.lavender, fontSize: FONTS.sizes.xs }}>THIS MONTH</Text>
-              <Text style={{ color: COLORS.white, fontSize: FONTS.sizes.xl, fontWeight: '800' }}>{formatCurrency(thisMonthTotal)}</Text>
+              <Text style={{ color: COLORS.white, fontSize: FONTS.sizes.xl, fontWeight: '800' }}>{formatCurrency(thisMonthPersonal)}</Text>
             </View>
             <View style={{ alignItems: 'flex-end' }}>
               <Text style={{ color: COLORS.lavender, fontSize: FONTS.sizes.xs }}>ALL TIME</Text>
-              <Text style={{ color: COLORS.white, fontSize: FONTS.sizes.xl, fontWeight: '800' }}>{formatCurrency(grandTotal)}</Text>
+              <Text style={{ color: COLORS.white, fontSize: FONTS.sizes.xl, fontWeight: '800' }}>{formatCurrency(myPersonalTotal)}</Text>
             </View>
           </View>
           <View style={{ backgroundColor: 'rgba(255,255,255,0.05)', height: 1, marginBottom: SPACING[3] }} />
@@ -141,23 +222,47 @@ export default function SummaryScreen({ route, navigation }) {
 
         {tab === 'categories' && (
           <>
-            <GlassCard style={styles.totalCard}>
-              <Text style={styles.totalLabel}>Total Spent</Text>
-              <Text style={styles.totalAmount}>{formatCurrency(grandTotal)}</Text>
-            </GlassCard>
-            {categoryTotals.map(c => (
-              <GlassCard key={c.id} style={styles.catCard}>
-                <View style={styles.catRow}>
-                  <View style={[styles.catDot, { backgroundColor: c.color }]} />
-                  <Text style={styles.catName}>{c.label}</Text>
-                  <Text style={styles.catAmount}>{formatCurrency(c.total)}</Text>
-                  <Text style={styles.catPct}>{grandTotal > 0 ? ((c.total / grandTotal) * 100).toFixed(0) : 0}%</Text>
-                </View>
-                <View style={styles.progressBg}>
-                  <View style={[styles.progressFill, { width: `${grandTotal > 0 ? (c.total / grandTotal) * 100 : 0}%`, backgroundColor: c.color }]} />
-                </View>
-              </GlassCard>
-            ))}
+            {groupId ? (
+              <>
+                <GlassCard style={styles.totalCard}>
+                  <Text style={styles.totalLabel}>Total Spent</Text>
+                  <Text style={styles.totalAmount}>{formatCurrency(grandTotal)}</Text>
+                </GlassCard>
+                {categoryTotals.map(c => (
+                  <GlassCard key={c.id} style={styles.catCard}>
+                    <View style={styles.catRow}>
+                      <View style={[styles.catDot, { backgroundColor: c.color }]} />
+                      <Text style={styles.catName}>{c.label}</Text>
+                      <Text style={styles.catAmount}>{formatCurrency(c.total)}</Text>
+                      <Text style={styles.catPct}>{grandTotal > 0 ? ((c.total / grandTotal) * 100).toFixed(0) : 0}%</Text>
+                    </View>
+                    <View style={styles.progressBg}>
+                      <View style={[styles.progressFill, { width: `${grandTotal > 0 ? (c.total / grandTotal) * 100 : 0}%`, backgroundColor: c.color }]} />
+                    </View>
+                  </GlassCard>
+                ))}
+              </>
+            ) : (
+              <>
+                <GlassCard style={styles.totalCard}>
+                  <Text style={styles.totalLabel}>You Spent</Text>
+                  <Text style={styles.totalAmount}>{formatCurrency(myPersonalTotal)}</Text>
+                </GlassCard>
+                {myPersonalCategories.map(c => (
+                  <GlassCard key={c.id} style={styles.catCard}>
+                    <View style={styles.catRow}>
+                      <View style={[styles.catDot, { backgroundColor: c.color }]} />
+                      <Text style={styles.catName}>{c.label}</Text>
+                      <Text style={styles.catAmount}>{formatCurrency(c.total)}</Text>
+                      <Text style={styles.catPct}>{myPersonalTotal > 0 ? ((c.total / myPersonalTotal) * 100).toFixed(0) : 0}%</Text>
+                    </View>
+                    <View style={styles.progressBg}>
+                      <View style={[styles.progressFill, { width: `${myPersonalTotal > 0 ? (c.total / myPersonalTotal) * 100 : 0}%`, backgroundColor: c.color }]} />
+                    </View>
+                  </GlassCard>
+                ))}
+              </>
+            )}
           </>
         )}
 

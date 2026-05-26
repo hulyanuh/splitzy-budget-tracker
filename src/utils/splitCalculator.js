@@ -18,12 +18,54 @@ export function calculateEqualSplit(amount, members) {
   }, {});
 }
 
+const getParticipantId = (row) => {
+  if (!row) return null;
+  return row.user_id || (row.guest_member_id ? `guest_${row.guest_member_id}` : null);
+};
+
 /**
  * Validate custom split — shares must sum to total
  */
 export function validateCustomSplit(totalAmount, splits) {
   const sum = Object.values(splits).reduce((a, b) => a + parseFloat(b || 0), 0);
   return Math.abs(sum - totalAmount) < 0.01;
+}
+
+/**
+ * Validate percentage split — percentages must sum to 100%
+ */
+export function validatePercentageSplit(splits) {
+  const totalPercent = Object.values(splits).reduce((a, b) => a + parseFloat(b || 0), 0);
+  return Math.abs(totalPercent - 100) < 0.5;
+}
+
+/**
+ * Calculate percentage split — convert percentages to amounts
+ * @param {number}   amount   - Total expense amount
+ * @param {string[]} members  - Array of member IDs
+ * @param {Object}   splits   - Map of memberId → percentage
+ * @returns {Object} Map of memberId → share amount
+ */
+export function calculatePercentageSplit(amount, members, splits) {
+  const result = {};
+  const totalPercent = members.reduce((sum, id) => sum + (parseFloat(splits[id] || 0)), 0);
+  let remainder = amount;
+
+  for (let i = 0; i < members.length; i++) {
+    const id = members[i];
+    const percent = parseFloat(splits[id] || 0);
+    const share = totalPercent > 0 ? (amount * percent) / totalPercent : 0;
+    
+    if (i === members.length - 1) {
+      result[id] = remainder; // Assign remainder to last member to avoid rounding errors
+    } else {
+      const rounded = parseFloat(share.toFixed(2));
+      result[id] = rounded;
+      remainder -= rounded;
+    }
+  }
+
+  return result;
 }
 
 /**
@@ -36,20 +78,35 @@ export function calculateGroupBalances(expenses, memberIds) {
   const balances = memberIds.reduce((acc, id) => ({ ...acc, [id]: 0 }), {});
 
   for (const expense of expenses) {
-    const payerId = expense.paid_by;
-    if (!balances.hasOwnProperty(payerId)) continue;
+    const payments = (expense.payments || []).reduce((acc, p) => {
+      const id = getParticipantId(p);
+      if (!id) return acc;
+      acc[id] = (acc[id] || 0) + (parseFloat(p.amount) || 0);
+      return acc;
+    }, {});
+    // Fallback: if no explicit payments rows, treat `paid_by` as a single payment covering the whole expense
+    if ((!expense.payments || expense.payments.length === 0) && expense.paid_by) {
+      const pid = expense.paid_by;
+      payments[pid] = (payments[pid] || 0) + (parseFloat(expense.amount) || 0);
+    }
 
-    // Only debit/credit active (unsettled) splits
-    for (const split of (expense.splits || [])) {
-      if (split.is_settled) continue;
-      
-      // Don't count payer's own split as a debt to themselves
-      if (split.user_id === payerId) continue;
+    const splits = (expense.splits || []).reduce((acc, s) => {
+      const id = getParticipantId(s);
+      if (!id) return acc;
+      acc[id] = parseFloat(s.amount) || 0;
+      return acc;
+    }, {});
 
-      if (balances.hasOwnProperty(split.user_id)) {
-        balances[split.user_id] -= split.amount;
-        balances[payerId] += split.amount;
-      }
+    const splitPaid = (expense.splits || []).reduce((acc, s) => {
+      const id = getParticipantId(s);
+      if (!id) return acc;
+      acc[id] = (acc[id] || 0) + (parseFloat(s.amount_paid) || 0);
+      return acc;
+    }, {});
+
+    for (const id of memberIds) {
+      if (!balances.hasOwnProperty(id)) continue;
+      balances[id] += (payments[id] || 0) - (splits[id] || 0) + (splitPaid[id] || 0);
     }
   }
 
@@ -131,28 +188,26 @@ export function calculateMemberSummary(expenses, members) {
   return members.map(member => {
     let totalPaid = 0;
     let totalShare = 0;
-    let activePaid = 0;
-    let activeShare = 0;
-    const memberId = member.id || member.user_id;
+    let balanceAdjustment = 0;
+    const memberId = member.id; // Direct use of id field
 
     for (const expense of expenses) {
-      if (expense.paid_by === memberId) {
-        totalPaid += expense.amount;
-        // Receivables: outstanding splits from other people
-        const otherSplitsUnsettled = (expense.splits || []).filter(s => s.user_id !== expense.paid_by && !s.is_settled);
-        activePaid += otherSplitsUnsettled.reduce((sum, s) => sum + s.amount, 0);
+      let expensePayments = (expense.payments || []).filter(p => getParticipantId(p) === memberId);
+      // Fallback: if no payment rows, and this member is the `paid_by`, count full amount
+      if ((expense.payments || []).length === 0 && expense.paid_by && expense.paid_by === memberId) {
+        expensePayments = [{ user_id: expense.paid_by, amount: expense.amount }];
       }
-      const split = (expense.splits || []).find(s => s.user_id === memberId);
+      totalPaid += expensePayments.reduce((sum, p) => sum + (parseFloat(p.amount) || 0), 0);
+
+      const split = (expense.splits || []).find(s => getParticipantId(s) === memberId);
       if (split) {
-        totalShare += split.amount;
-        // Payables: our split if not settled and we are not the payer
-        if (!split.is_settled && expense.paid_by !== memberId) {
-          activeShare += split.amount;
-        }
+        const shareAmount = parseFloat(split.amount) || 0;
+        totalShare += shareAmount;
+        balanceAdjustment += parseFloat(split.amount_paid) || 0;
       }
     }
 
-    const balance = activePaid - activeShare;
+    const balance = totalPaid - totalShare + balanceAdjustment;
     return {
       ...member,
       id: memberId,

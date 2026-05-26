@@ -12,17 +12,23 @@ import { Avatar, GlassCard } from './UIComponents';
 // ─────────────────────────────────────────────────────────────────────────────
 export function ExpenseCard({ expense, onPress, currentUserId, currency = 'PHP' }) {
   const category = CATEGORIES.find(c => c.id === expense.category) || CATEGORIES[CATEGORIES.length - 1];
-  const isPayer  = expense.paid_by === currentUserId;
   const mySplit  = expense.splits?.find(s => s.user_id === currentUserId);
   const myShare  = mySplit?.amount ?? 0;
   const isMyShareSettled = mySplit?.is_settled ?? false;
 
-  const displayAmount = isPayer
-    ? (expense.splits?.filter(s => s.user_id !== currentUserId && !s.is_settled).reduce((a, s) => a + s.amount, 0) || 0)
-    : (isMyShareSettled ? 0 : myShare);
+  // Calculate what I paid for this expense
+  const myPayments = (expense.payments || []).filter(p => p.user_id === currentUserId);
+  const myTotalPaid = myPayments.reduce((sum, p) => sum + (parseFloat(p.amount) || 0), 0);
+  // Fallback to paid_by when no payment rows exist
+  const myPaidAmount = myTotalPaid > 0 ? myTotalPaid : (expense.paid_by === currentUserId ? (parseFloat(expense.amount) || 0) : 0);
 
-  const showSuccessStyle = isPayer || isMyShareSettled || displayAmount === 0;
-  const sign = displayAmount === 0 ? '' : (isPayer ? '+' : '-');
+  // Net balance: positive = I'm owed, negative = I owe
+  const displayAmount = Math.abs(myPaidAmount - myShare);
+  const isPositive = myPaidAmount >= myShare;
+  const isSettled = myPaidAmount >= myShare || isMyShareSettled;
+
+  const showSuccessStyle = isSettled || displayAmount === 0;
+  const sign = displayAmount === 0 ? '' : (isPositive ? '+' : '-');
 
   return (
     <GlassCard onPress={onPress} style={styles.expenseCard}>
@@ -35,7 +41,7 @@ export function ExpenseCard({ expense, onPress, currentUserId, currency = 'PHP' 
           <View style={styles.expenseSubRow}>
             <CreditCard size={11} color={COLORS.lavender} strokeWidth={1.8} />
             <Text style={styles.expenseSub}>
-              {'  '}{isPayer ? 'You paid' : `${expense.payer_name || 'Someone'} paid`}
+              {'  '}{myPaidAmount > 0 ? 'You paid' : (expense.payer_name ? `${expense.payer_name} paid` : 'Someone paid')}
             </Text>
           </View>
           <Text style={styles.expenseDate}>
@@ -151,15 +157,20 @@ export function TransactionRow({ transaction, memberMap }) {
 
   return (
     <GlassCard style={styles.txRow}>
-      <Avatar name={from.full_name} size={36} />
+      <View style={styles.txLeft}>
+        <Avatar name={from.full_name} size={40} />
+        <Text style={styles.txLabel}>Pays</Text>
+        <Text style={styles.txFromName}>{from.full_name}</Text>
+      </View>
       <View style={styles.txMid}>
-        <Text style={styles.txName}>{from.full_name}</Text>
-        <View style={styles.txArrowRow}>
-          <ArrowRight size={16} color={COLORS.babyPink} strokeWidth={2} />
-        </View>
+        <ArrowRight size={18} color={COLORS.babyPink} strokeWidth={2} />
         <Text style={styles.txAmount}>{formatCurrency(transaction.amount)}</Text>
       </View>
-      <Avatar name={to.full_name} size={36} />
+      <View style={styles.txRight}>
+        <Avatar name={to.full_name} size={40} />
+        <Text style={styles.txLabel}>To</Text>
+        <Text style={styles.txToName}>{to.full_name}</Text>
+      </View>
     </GlassCard>
   );
 }
@@ -209,9 +220,12 @@ const styles = StyleSheet.create({
   balAmount:    { fontSize: FONTS.sizes.base, fontWeight: '800' },
   balLabel:     { color: COLORS.lavender, fontSize: FONTS.sizes.xs, marginTop: 2 },
 
-  txRow:      { flexDirection: 'row', alignItems: 'center', gap: SPACING[3], marginBottom: SPACING[3] },
-  txMid:      { flex: 1, alignItems: 'center' },
-  txName:     { color: COLORS.lavender, fontSize: FONTS.sizes.xs, marginBottom: 2 },
-  txArrowRow: { marginVertical: 2 },
-  txAmount:   { color: COLORS.white, fontSize: FONTS.sizes.base, fontWeight: '800', marginTop: 2 },
+  txRow:       { flexDirection: 'row', alignItems: 'center', gap: SPACING[3], marginBottom: SPACING[3] },
+  txLeft:      { alignItems: 'center', gap: SPACING[1] },
+  txMid:       { flex: 1, alignItems: 'center', gap: SPACING[2] },
+  txLabel:     { color: COLORS.lavender, fontSize: FONTS.sizes.xs, fontWeight: '600' },
+  txFromName:  { color: COLORS.white, fontSize: FONTS.sizes.sm, fontWeight: '700' },
+  txToName:    { color: COLORS.white, fontSize: FONTS.sizes.sm, fontWeight: '700' },
+  txAmount:    { color: COLORS.babyPink, fontSize: FONTS.sizes.base, fontWeight: '800', marginTop: 2 },
+  txRight:     { alignItems: 'center', gap: SPACING[1] },
 });
